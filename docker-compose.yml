@@ -1,0 +1,68 @@
+services:
+  mongodb:
+    image: mongo:7
+    container_name: codehealer-mongodb
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "27017:27017"
+    networks:
+      - codehealer-net
+
+  backend:
+    build:
+      context: ./backend
+    container_name: codehealer-backend
+    restart: unless-stopped
+    depends_on:
+      - mongodb
+    environment:
+      SPRING_DATA_MONGODB_URI: mongodb://mongodb:27017/codehealer
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-prod-min-32-chars-long}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-change-me-32-byte-base64-key===}
+      JOB_RUNNER_URL: http://job-runner:4100
+      JOB_RUNNER_SHARED_SECRET: ${JOB_RUNNER_SHARED_SECRET:-dev-shared-secret}
+      ZOHO_ACCOUNTS_BASE_URL: ${ZOHO_ACCOUNTS_BASE_URL:-https://accounts.zoho.in}
+      ZOHO_SPRINTS_API_BASE_URL: ${ZOHO_SPRINTS_API_BASE_URL:-https://sprintsapi.zoho.in/zsapi}
+      APP_CORS_ORIGIN: ${APP_CORS_ORIGIN:-http://localhost:5173,http://127.0.0.1:5173}
+    ports:
+      - "8080:8080"
+    networks:
+      - codehealer-net
+
+  job-runner:
+    build:
+      context: ./job-runner
+    container_name: codehealer-job-runner
+    restart: unless-stopped
+    environment:
+      PORT: 4100
+      BACKEND_INTERNAL_URL: http://backend:8080
+      JOB_RUNNER_SHARED_SECRET: ${JOB_RUNNER_SHARED_SECRET:-dev-shared-secret}
+    volumes:
+      - job-workspace:/workspace
+      - job-runner-claude-home:/home/node
+    networks:
+      - codehealer-net
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: codehealer-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+    networks:
+      - codehealer-net
+
+networks:
+  codehealer-net:
+    driver: bridge
+
+volumes:
+  mongo-data:
+  job-workspace:
+  job-runner-claude-home:

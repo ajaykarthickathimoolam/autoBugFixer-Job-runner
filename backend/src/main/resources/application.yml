@@ -1,0 +1,35 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: codehealer-backend
+  autoconfigure:
+    exclude: org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration
+  data:
+    mongodb:
+      uri: ${SPRING_DATA_MONGODB_URI:mongodb://localhost:27017/codehealer}
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:dev-only-secret-change-me-min-32-chars}
+    expiration-minutes: 480
+  encryption:
+    key: ${APP_ENCRYPTION_KEY:ZGV2LW9ubHktMzItYnl0ZS1rZXktY2hhbmdlIQ==}
+  cors:
+    allowed-origin: ${APP_CORS_ORIGIN:http://localhost:5173,http://127.0.0.1:5173}
+  job-runner:
+    base-url: ${JOB_RUNNER_URL:http://localhost:4100}
+    shared-secret: ${JOB_RUNNER_SHARED_SECRET:dev-shared-secret}
+  zoho:
+    accounts-base-url: ${ZOHO_ACCOUNTS_BASE_URL:https://accounts.zoho.com}
+    api-base-url: ${ZOHO_SPRINTS_API_BASE_URL:https://sprintsapi.zoho.com/zsapi}
+  jira:
+    webhook-secret: ${JIRA_WEBHOOK_SECRET:}
+  seed:
+    admin-username: ${SEED_ADMIN_USERNAME:sarathi}
+    admin-password: ${SEED_ADMIN_PASSWORD:sarathi@7}
+
+logging:
+  level:
+    com.encipherhealth.codehealer: INFO
