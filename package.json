@@ -1,0 +1,13 @@
+{
+  "name": "codehealer-job-runner",
+  "version": "0.1.0",
+  "description": "CodeHealer job-runner: clones service repos, invokes Claude Code CLI to fix a ticket, verifies, and opens a GitHub PR",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
