@@ -13,11 +13,16 @@ function isTestPath(rel) {
 }
 
 const SECRET_PATTERNS = [
-  { id: 'private-key', re: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/ },
+  // Header plus key material. A placeholder or regex source with only the BEGIN line is not a secret.
+  { id: 'private-key', re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----\r?\n[A-Za-z0-9+/=\r\n]{64,}/ },
   { id: 'aws-key', re: /AKIA[0-9A-Z]{16}/ },
   { id: 'generic-secret', re: /(?:api[_-]?key|secret|password|token)\s*[:=]\s*['"][^'"]{12,}['"]/i },
   { id: 'jwt', re: /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/ },
 ];
+
+export function secretPatternIds(text) {
+  return SECRET_PATTERNS.filter((pat) => pat.re.test(String(text || ''))).map((pat) => pat.id);
+}
 
 const SAST_PATTERNS = [
   { id: 'eval', re: /\beval\s*\(/ },
@@ -74,8 +79,12 @@ export function buildSecurityRemediationPlan(results) {
   return lines.join('\n');
 }
 
-function isPatchableDependency(finding) {
+export function isPatchableDependency(finding) {
   return finding.kind === 'dependency' && finding.fixAvailable === true && finding.semverMajor !== true;
+}
+
+export function patchablePackageNames(findings) {
+  return [...new Set((findings || []).filter(isPatchableDependency).map((finding) => finding.packageName).filter(Boolean))];
 }
 
 function formatDependency(finding) {
@@ -244,7 +253,7 @@ async function walk(root, current, findings) {
     const rel = path.relative(root, full);
     const inTests = isTestPath(rel);
     for (const pat of SECRET_PATTERNS) {
-      if (inTests && (pat.id === 'generic-secret' || pat.id === 'jwt')) {
+      if (inTests && (pat.id === 'generic-secret' || pat.id === 'jwt' || pat.id === 'private-key')) {
         continue;
       }
       if (pat.re.test(text)) {

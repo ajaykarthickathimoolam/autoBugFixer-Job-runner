@@ -34,7 +34,8 @@ public final class ResumePoint {
         if (reason.contains("diff scope rejected")) {
             return "PUSH";
         }
-        if (reason.contains("security remediation made no changes")) {
+        if (reason.contains("security remediation made no changes")
+                || reason.contains("security scan failed after")) {
             return "REMEDIATE";
         }
         if (reason.contains("security remediation rejected") || reason.contains("security scan failed")) {

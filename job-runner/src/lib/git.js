@@ -5,6 +5,7 @@ import { redactSecrets } from './redact.js';
 import { isAborted, TaskAbortedError } from './abort.js';
 import { currentJob } from './jobContext.js';
 import { parsePorcelain } from './scope.js';
+import { logger } from './logger.js';
 
 function throwIfGitAborted(result) {
   const jobId = currentJob()?.jobId;
@@ -13,9 +14,28 @@ function throwIfGitAborted(result) {
   }
 }
 
+function isPublicKeyDenied(result) {
+  return /Permission denied \(publickey\)/i.test(`${result?.stderr || ''}\n${result?.stdout || ''}`);
+}
+
 function fail(label, result) {
   throwIfGitAborted(result);
-  throw new Error(`${label}: ${redactSecrets(result?.stderr || result?.stdout || '')}`);
+  const detail = redactSecrets(result?.stderr || result?.stdout || '');
+  if (isPublicKeyDenied(result)) {
+    throw new Error(
+      `${label}: GitHub rejected the SSH key. On the project, add a personal access token or GitHub App, or add the matching public key as a deploy key. This project has no token, so git@ URLs cannot clone.`
+    );
+  }
+  throw new Error(`${label}: ${detail}`);
+}
+
+async function gitCmd(args, gitEnv, fallbackGitEnv) {
+  const first = await run('git', args, { env: gitEnv });
+  if (first.code === 0 || !fallbackGitEnv || !isPublicKeyDenied(first)) {
+    return first;
+  }
+  logger.info('Stored SSH key was rejected; retrying with the machine SSH agent');
+  return run('git', args, { env: fallbackGitEnv });
 }
 
 async function pathExists(p) {
@@ -31,24 +51,24 @@ async function pathExists(p) {
  * Refreshes the persistent per-service base clone. The remote URL is always the clean
  * https or ssh URL. Credentials stay in the git environment, not in .git/config.
  */
-export async function ensureBaseClone({ basePath, repoUrl, baseBranch, gitEnv }) {
+export async function ensureBaseClone({ basePath, repoUrl, baseBranch, gitEnv, fallbackGitEnv }) {
   if (await pathExists(path.join(basePath, '.git'))) {
-    const setUrl = await run('git', ['-C', basePath, 'remote', 'set-url', 'origin', repoUrl], { env: gitEnv });
+    const setUrl = await gitCmd(['-C', basePath, 'remote', 'set-url', 'origin', repoUrl], gitEnv, fallbackGitEnv);
     if (setUrl.code !== 0) fail(`remote set-url failed`, setUrl);
-    const fetched = await run('git', ['-C', basePath, 'fetch', 'origin', baseBranch], { env: gitEnv });
+    const fetched = await gitCmd(['-C', basePath, 'fetch', 'origin', baseBranch], gitEnv, fallbackGitEnv);
     if (fetched.code !== 0) fail(`fetch ${baseBranch} failed`, fetched);
-    const checkout = await run('git', ['-C', basePath, 'checkout', baseBranch], { env: gitEnv });
+    const checkout = await gitCmd(['-C', basePath, 'checkout', baseBranch], gitEnv, fallbackGitEnv);
     if (checkout.code !== 0) fail(`checkout ${baseBranch} failed`, checkout);
-    const reset = await run('git', ['-C', basePath, 'reset', '--hard', `origin/${baseBranch}`], { env: gitEnv });
+    const reset = await gitCmd(['-C', basePath, 'reset', '--hard', `origin/${baseBranch}`], gitEnv, fallbackGitEnv);
     if (reset.code !== 0) fail(`reset to origin/${baseBranch} failed`, reset);
-    const cleaned = await run('git', ['-C', basePath, 'clean', '-fd'], { env: gitEnv });
+    const cleaned = await gitCmd(['-C', basePath, 'clean', '-fd'], gitEnv, fallbackGitEnv);
     if (cleaned.code !== 0) fail(`clean failed`, cleaned);
   } else {
     await fs.rm(basePath, { recursive: true, force: true }).catch(() => {});
     await fs.mkdir(basePath, { recursive: true });
-    const result = await run('git', ['clone', '--branch', baseBranch, repoUrl, basePath], { env: gitEnv });
+    const result = await gitCmd(['clone', '--branch', baseBranch, repoUrl, basePath], gitEnv, fallbackGitEnv);
     if (result.code !== 0) fail('git clone failed', result);
-    const setUrl = await run('git', ['-C', basePath, 'remote', 'set-url', 'origin', repoUrl], { env: gitEnv });
+    const setUrl = await gitCmd(['-C', basePath, 'remote', 'set-url', 'origin', repoUrl], gitEnv, fallbackGitEnv);
     if (setUrl.code !== 0) fail('remote set-url failed', setUrl);
   }
 }
@@ -124,18 +144,18 @@ export async function currentBranch(taskPath) {
 }
 
 /** SHA of the remote branch, or null when that branch does not exist. */
-export async function remoteHead(repoUrl, branchName, gitEnv) {
-  const result = await run('git', ['ls-remote', '--heads', repoUrl, `refs/heads/${branchName}`], { env: gitEnv });
+export async function remoteHead(repoUrl, branchName, gitEnv, fallbackGitEnv) {
+  const result = await gitCmd(['ls-remote', '--heads', repoUrl, `refs/heads/${branchName}`], gitEnv, fallbackGitEnv);
   if (result.code !== 0) fail('could not read remote branch', result);
   const line = result.stdout.trim().split('\n').find((entry) => entry.endsWith(`refs/heads/${branchName}`));
   return line ? line.split(/\s+/)[0] : null;
 }
 
-export async function pushBranch(taskPath, branchName, remoteUrl, gitEnv) {
-  const setUrl = await run('git', ['-C', taskPath, 'remote', 'set-url', 'origin', remoteUrl], { env: gitEnv });
+export async function pushBranch(taskPath, branchName, remoteUrl, gitEnv, fallbackGitEnv) {
+  const setUrl = await gitCmd(['-C', taskPath, 'remote', 'set-url', 'origin', remoteUrl], gitEnv, fallbackGitEnv);
   if (setUrl.code !== 0) fail('remote set-url failed', setUrl);
   const refspec = `HEAD:refs/heads/${branchName}`;
-  const result = await run('git', ['-C', taskPath, 'push', '-u', 'origin', refspec], { env: gitEnv });
+  const result = await gitCmd(['-C', taskPath, 'push', '-u', 'origin', refspec], gitEnv, fallbackGitEnv);
   if (result.code === 0) {
     return;
   }
@@ -144,15 +164,15 @@ export async function pushBranch(taskPath, branchName, remoteUrl, gitEnv) {
   if (!/\[rejected\]|non-fast-forward|fetch first/i.test(detail)) {
     fail('push failed', result);
   }
-  const fetched = await run('git', ['-C', taskPath, 'fetch', 'origin', `refs/heads/${branchName}`], { env: gitEnv });
+  const fetched = await gitCmd(['-C', taskPath, 'fetch', 'origin', `refs/heads/${branchName}`], gitEnv, fallbackGitEnv);
   if (fetched.code !== 0) fail('push failed', result);
   const expectedResult = await run('git', ['-C', taskPath, 'rev-parse', 'FETCH_HEAD']);
   if (expectedResult.code !== 0) fail('push failed', expectedResult);
   const expected = expectedResult.stdout.trim();
-  const forced = await run(
-      'git',
+  const forced = await gitCmd(
       ['-C', taskPath, 'push', '-u', `--force-with-lease=refs/heads/${branchName}:${expected}`, 'origin', refspec],
-      { env: gitEnv }
+      gitEnv,
+      fallbackGitEnv
   );
   if (forced.code !== 0) fail('push failed', forced.code ? forced : result);
 }

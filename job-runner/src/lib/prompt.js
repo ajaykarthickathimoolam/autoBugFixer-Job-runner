@@ -104,6 +104,28 @@ export function buildFixPrompt(task, serviceDirs, clarificationLevel) {
   ].join('\n');
 }
 
+/** Apply only the approved security resolve steps. serviceDirs match buildFixPrompt. */
+export function buildSecurityRemediationPrompt(task, serviceDirs) {
+  return [
+    `You are applying an approved security remediation for the "${task.projectName}" project.`,
+    '',
+    'Approved resolve steps (do not expand scope beyond this):',
+    task.securityRemediationPlan || '(none)',
+    '',
+    `This checkout has ${serviceDirs.length} service(s) as sibling subfolders of the current directory:`,
+    serviceBlocks(serviceDirs),
+    '',
+    'Instructions:',
+    '1. Apply only the lines that say "The fixer will do only that."',
+    '2. Do not run npm audit fix. Do not upgrade packages that the plan says to patch with npm audit fix.',
+    '3. For a secret, remove the committed secret from the named file. Do not paste the secret into another file, a comment, or your summary.',
+    '4. For a vulnerable dependency with no patch-level fix, upgrade or replace only that package.',
+    '5. Do not commit, push, or open a pull request.',
+    '6. Do not make unrelated refactors.',
+    '7. Never output NEEDS_INPUT. The steps are already approved.',
+  ].join('\n');
+}
+
 export function extractChangePlan(output) {
   if (!output) return '';
   const match = output.match(/CHANGE_PLAN:\s*([\s\S]+)/i);

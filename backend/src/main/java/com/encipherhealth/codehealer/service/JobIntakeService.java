@@ -17,6 +17,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -96,8 +97,15 @@ public class JobIntakeService {
 
         List<String> serviceIds = project.getServices().stream().map(ServiceConfig::getId).toList();
         job.setServiceIds(serviceIds);
+        String previousReason = job.getFailureReason() == null
+                ? ""
+                : job.getFailureReason().toLowerCase(Locale.ROOT);
         String resumeFrom = ResumePoint.forFailedJob(job);
         job.setResumeFrom(resumeFrom);
+        if (previousReason.contains("approved remediation")) {
+            job.setSecurityRemediationAttempts(0);
+        }
+        job.setPendingApproval(null);
         job.setFailureReason(null);
         job.setPendingQuestion(null);
         job.setCancelledBy(null);

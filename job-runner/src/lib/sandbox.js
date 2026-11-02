@@ -52,15 +52,48 @@ export function buildBwrapPrefix(cwd) {
   if (exists('/etc/passwd')) args.push('--ro-bind', '/etc/passwd', '/etc/passwd');
   if (exists('/etc/group')) args.push('--ro-bind', '/etc/group', '/etc/group');
   if (exists('/etc/nsswitch.conf')) args.push('--ro-bind', '/etc/nsswitch.conf', '/etc/nsswitch.conf');
+  bindNodePrefix(args, cwd);
   args.push('--bind', cwd, cwd, '--chdir', cwd);
   return args;
 }
 
+function nodeBinDir() {
+  return path.dirname(process.execPath);
+}
+
+function nodePrefixDir() {
+  return path.resolve(nodeBinDir(), '..');
+}
+
+function alreadyVisible(target) {
+  return target === '/usr' || target.startsWith('/usr/')
+      || target === '/opt' || target.startsWith('/opt/')
+      || target === '/bin' || target.startsWith('/bin/');
+}
+
+function bindNodePrefix(args, cwd) {
+  const prefix = nodePrefixDir();
+  if (!exists(prefix)) return;
+  let resolved = prefix;
+  try {
+    resolved = fs.realpathSync(prefix);
+  } catch {
+    return;
+  }
+  if (resolved === cwd || resolved.startsWith(`${cwd}${path.sep}`)) return;
+  if (alreadyVisible(resolved)) return;
+  args.push('--ro-bind', resolved, resolved);
+}
+
 function safeEnv(extra = {}) {
+  const nodeBin = nodeBinDir();
   const env = {
-    PATH: process.env.PATH || '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+    PATH: [nodeBin, process.env.PATH || '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'].join(':'),
     LANG: process.env.LANG || 'C.UTF-8',
     TMPDIR: '/tmp',
+    HOME: '/tmp',
+    npm_config_cache: '/tmp/npm-cache',
+    npm_config_update_notifier: 'false',
     GIT_TERMINAL_PROMPT: '0',
   };
   if (process.env.JAVA_HOME) env.JAVA_HOME = process.env.JAVA_HOME;
@@ -70,10 +103,9 @@ function safeEnv(extra = {}) {
   return env;
 }
 
-function envArgs(env, cwd) {
+function envArgs(env) {
   const args = ['--clearenv'];
-  const merged = { ...env, HOME: cwd };
-  for (const [key, value] of Object.entries(merged)) {
+  for (const [key, value] of Object.entries(env)) {
     args.push('--setenv', key, value);
   }
   return args;
@@ -131,7 +163,7 @@ async function probeBwrap() {
   if (probeResult !== undefined) return probeResult;
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'codehealer-sandbox-'));
   try {
-    const result = await spawnTracked('bwrap', [...buildBwrapPrefix(dir), ...envArgs(safeEnv(), dir), '--', '/bin/true'], {
+    const result = await spawnTracked('bwrap', [...buildBwrapPrefix(dir), ...envArgs(safeEnv()), '--', '/bin/true'], {
       timeoutMs: 8000,
       track: false,
     });
@@ -160,10 +192,10 @@ async function runInside(cwd, argv, { extraEnv, timeoutMs, shellCommand }) {
   if (!ok && process.env.CODEHEALER_REQUIRE_SANDBOX === 'true') {
     throw new Error('bubblewrap sandbox is required but bwrap could not start a user namespace');
   }
-  const env = safeEnv({ ...extraEnv, HOME: cwd });
+  const env = safeEnv(extraEnv);
   let result;
   if (ok) {
-    result = await spawnTracked('bwrap', [...buildBwrapPrefix(cwd), ...envArgs(env, cwd), '--', ...argv], { timeoutMs });
+    result = await spawnTracked('bwrap', [...buildBwrapPrefix(cwd), ...envArgs(env), '--', ...argv], { timeoutMs });
     result.sandboxed = true;
   } else {
     result = await spawnTracked(argv[0], argv.slice(1), { cwd, env, timeoutMs });

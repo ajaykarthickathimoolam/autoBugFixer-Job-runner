@@ -8,7 +8,7 @@ import { createPullRequest } from './lib/github.js';
 import { runShell } from './lib/exec.js';
 import { basePathFor, taskRootFor, serviceDirFor, sanitizeBranchSegment } from './lib/workspace.js';
 import { buildFixPrompt, buildPlanPrompt, buildSecurityRemediationPrompt, extractChangePlan, ticketTooVague, vagueTicketQuestion } from './lib/prompt.js';
-import { buildSecurityRemediationPlan, planAllowsNpmAuditFix, planNeedsFixer, runSecurityScans } from './lib/securityScan.js';
+import { buildSecurityRemediationPlan, patchablePackageNames, planAllowsNpmAuditFix, planNeedsFixer, runSecurityScans } from './lib/securityScan.js';
 import { abortHaltStatus, clearAbort, isAborted, throwIfAborted, TaskAbortedError } from './lib/abort.js';
 import { activitySnapshot, jobContext, newActivity, noteFileChanged, noteProvider, setTestsNotRun } from './lib/jobContext.js';
 import { redactSecrets } from './lib/redact.js';
@@ -46,6 +46,10 @@ function stepReached(resume, step) {
 function truncate(text) {
   if (!text) return '';
   return text.length > LOG_TRUNCATE_LENGTH ? `...${text.slice(-LOG_TRUNCATE_LENGTH)}` : text;
+}
+
+function shQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
 class GuardDeniedError extends Error {
@@ -145,18 +149,19 @@ async function runTaskBody(task) {
       githubPat: task.githubPat,
     });
     const gitEnv = gitAuth.gitEnv;
+    const fallbackGitEnv = gitAuth.fallbackGitEnv;
 
       if (resume !== 'CLONE') {
         await reportLog(jobId, `Resuming from ${RESUME_LABELS[resume] || resume}. Steps that already succeeded are skipped.`);
       }
       if (resume === 'PR') {
-        const onRemote = await anyRemoteBranch(task, branchName, gitAuth, gitEnv);
+        const onRemote = await anyRemoteBranch(task, branchName, gitAuth, gitEnv, fallbackGitEnv);
         if (!onRemote) {
           await reportLog(jobId, 'The feature branch is no longer on GitHub, so the fix will be applied again.');
           resume = 'FIX';
         }
       } else if (resume === 'PUSH' && !(await workspaceReady(task, taskRoot))) {
-        const onRemote = await anyRemoteBranch(task, branchName, gitAuth, gitEnv);
+        const onRemote = await anyRemoteBranch(task, branchName, gitAuth, gitEnv, fallbackGitEnv);
         if (onRemote) {
           await reportLog(jobId, 'The feature branch is already on GitHub, so this retry opens the pull request.');
           resume = 'PR';
@@ -183,7 +188,13 @@ async function runTaskBody(task) {
           throwIfAborted(jobId);
           const basePath = basePathFor(task.projectId, service.serviceId);
           const repoUrl = gitAuth.resolveUrl(service.repoUrl);
-          await git.ensureBaseClone({ basePath, repoUrl, baseBranch: service.baseBranch, gitEnv });
+          await git.ensureBaseClone({
+            basePath,
+            repoUrl,
+            baseBranch: service.baseBranch,
+            gitEnv,
+            fallbackGitEnv,
+          });
 
           const dir = serviceDirFor(taskRoot, service.name);
           await git.cloneLocalForTask(basePath, dir);
@@ -340,7 +351,7 @@ async function runTaskBody(task) {
           : '';
       const prBody = `Automated fix by CodeHealer for ticket ${task.ticketId}. Does not merge.\n\n${task.ticketDescription || ''}${planBody}${remediationBody}${scanBody}`;
 
-      const publish = resume === 'PR' ? await servicesOnRemote(task, branchName, gitAuth, gitEnv) : changed;
+      const publish = resume === 'PR' ? await servicesOnRemote(task, branchName, gitAuth, gitEnv, fallbackGitEnv) : changed;
       if (publish.length === 0) {
         throw new Error(`No feature branch named ${branchName} is on GitHub to open a pull request from`);
       }
@@ -374,7 +385,7 @@ async function runTaskBody(task) {
         if (resume !== 'PR') {
           await git.commitIfChanges(dir, `Fix ${task.ticketId}: ${task.ticketTitle || 'automated fix'}`);
           throwIfAborted(jobId);
-          await git.pushBranch(dir, branchName, gitAuth.resolveUrl(service.repoUrl), gitEnv);
+          await git.pushBranch(dir, branchName, gitAuth.resolveUrl(service.repoUrl), gitEnv, fallbackGitEnv);
         }
         const idemKey = `pr:${jobId}:${service.serviceId || service.name}`;
         const existing = await lookupIdempotency(idemKey);
@@ -442,6 +453,8 @@ async function applySecurityRemediation(task, taskRoot, targets, jobId) {
   for (const entry of targets) {
     throwIfAborted(jobId);
     if (!planAllowsNpmAuditFix(plan, entry.service.name)) continue;
+    const beforeScan = await runSecurityScans(entry.dir, entry.service.name);
+    const packages = patchablePackageNames(beforeScan.findings);
     const audit = await runShell('npm audit fix --omit=dev', { cwd: entry.dir, timeoutMs: 10 * 60 * 1000 });
     const output = `${audit.stdout || ''}${audit.stderr || ''}`;
     await reportLog(
@@ -449,6 +462,17 @@ async function applySecurityRemediation(task, taskRoot, targets, jobId) {
         `[${entry.service.name}] npm audit fix exited ${audit.code}\n${truncate(output)}`,
         audit.code === 0 ? 'INFO' : 'WARN'
     );
+    if (packages.length) {
+      const update = await runShell(
+          `npm update ${packages.map(shQuote).join(' ')} --omit=dev`,
+          { cwd: entry.dir, timeoutMs: 10 * 60 * 1000 }
+      );
+      await reportLog(
+          jobId,
+          `[${entry.service.name}] npm update ${packages.join(', ')} exited ${update.code}\n${truncate(`${update.stdout || ''}${update.stderr || ''}`)}`,
+          update.code === 0 ? 'INFO' : 'WARN'
+      );
+    }
   }
 
   if (planNeedsFixer(plan)) {
@@ -490,18 +514,18 @@ async function loadServiceDirs(task, taskRoot) {
   return dirs;
 }
 
-async function anyRemoteBranch(task, branchName, gitAuth, gitEnv) {
+async function anyRemoteBranch(task, branchName, gitAuth, gitEnv, fallbackGitEnv) {
   for (const service of task.services || []) {
-    const sha = await git.remoteHead(gitAuth.resolveUrl(service.repoUrl), branchName, gitEnv);
+    const sha = await git.remoteHead(gitAuth.resolveUrl(service.repoUrl), branchName, gitEnv, fallbackGitEnv);
     if (sha) return true;
   }
   return false;
 }
 
-async function servicesOnRemote(task, branchName, gitAuth, gitEnv) {
+async function servicesOnRemote(task, branchName, gitAuth, gitEnv, fallbackGitEnv) {
   const found = [];
   for (const service of task.services || []) {
-    const sha = await git.remoteHead(gitAuth.resolveUrl(service.repoUrl), branchName, gitEnv);
+    const sha = await git.remoteHead(gitAuth.resolveUrl(service.repoUrl), branchName, gitEnv, fallbackGitEnv);
     if (sha) found.push({ service, dir: null });
   }
   return found;

@@ -273,7 +273,7 @@ export function ProjectForm({
           <Field label="GitHub App private key" hint={editingId ? 'Leave blank to keep the current key' : 'PEM from the GitHub App'}>
             <textarea
                 className={`${inputCls} h-24 font-mono-brand`}
-                placeholder="-----BEGIN RSA PRIVATE KEY-----"
+                placeholder="Paste the GitHub App PEM"
                 value={form.githubAppPrivateKey ?? ''}
                 onChange={(e) => setForm({ ...form, githubAppPrivateKey: e.target.value, clearGithubAppPrivateKey: false })}
             />
@@ -291,7 +291,7 @@ export function ProjectForm({
           <Field label="GitHub SSH private key" hint={editingId ? 'Leave blank to keep the current value' : 'Optional. Used for git clone and push.'}>
             <textarea
                 className={`${inputCls} h-24 font-mono-brand`}
-                placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                placeholder="Paste an OpenSSH private key"
                 value={form.githubSshPrivateKey}
                 onChange={(e) => setForm({ ...form, githubSshPrivateKey: e.target.value, clearGithubSshKey: false })}
             />

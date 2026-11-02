@@ -11,12 +11,15 @@ function looksLikeSshPrivateKey(pem) {
 /** git@github.com:org/repo.git or https://github.com/org/repo.git → https://github.com/org/repo.git */
 export function toHttpsGithubUrl(repoUrl) {
   const raw = (repoUrl || '').trim();
-  const ssh = raw.match(/^git@([^:]+):(.+)$/);
-  if (ssh) {
-    const pathPart = ssh[2].replace(/^\/*/, '');
-    return `https://${ssh[1]}/${pathPart}`;
+  const scp = raw.match(/^git@([^:]+):(.+)$/);
+  if (scp) {
+    return `https://${scp[1]}/${scp[2].replace(/^\/*/, '')}`;
   }
-  return raw.replace(/\/\/[^/\s]*@/, '//');
+  const sshUri = raw.match(/^ssh:\/\/(?:git@)?([^/]+)\/(.+)$/i);
+  if (sshUri) {
+    return `https://${sshUri[1]}/${sshUri[2]}`;
+  }
+  return raw.replace(/^(https?:\/\/)[^/\s]*@/i, '$1');
 }
 
 function minimalGitEnv(extra = {}) {
@@ -32,27 +35,44 @@ function minimalGitEnv(extra = {}) {
   };
 }
 
+/** Local runner only: retry with the machine agent if the stored deploy key is rejected. */
+export function hostSshFallbackEnv() {
+  if (process.env.CODEHEALER_REQUIRE_SANDBOX === 'true') {
+    return null;
+  }
+  const extra = {};
+  if (process.env.USER) extra.USER = process.env.USER;
+  if (process.env.SSH_AUTH_SOCK) extra.SSH_AUTH_SOCK = process.env.SSH_AUTH_SOCK;
+  return minimalGitEnv(extra);
+}
+
 /**
- * Clone/push auth. A real SSH key is preferred. Otherwise the PAT is handed to git through
- * GIT_ASKPASS and is never written into the remote URL or .git/config.
+ * Clone/push auth. A GitHub App installation token or PAT is preferred: git uses HTTPS
+ * and GIT_ASKPASS, so the token never lands in the remote URL or .git/config.
+ * An SSH deploy key is used only when no token is present.
  */
 export async function createGitAuth({ githubSshPrivateKey, githubPat }) {
+  const pat = githubPat == null ? '' : String(githubPat).trim();
+  if (pat) {
+    return createAskpassAuth(pat);
+  }
+
   if (looksLikeSshPrivateKey(githubSshPrivateKey)) {
     const keyPath = await writeTempKey(githubSshPrivateKey);
     return {
       gitEnv: gitEnvForKey(keyPath),
+      fallbackGitEnv: hostSshFallbackEnv(),
       resolveUrl: (repoUrl) => repoUrl,
       cleanup: () => cleanupKey(keyPath),
     };
   }
 
-  const pat = githubPat == null ? '' : String(githubPat).trim();
-  if (!pat) {
-    throw new Error(
-        'Git clone needs a GitHub SSH private key (-----BEGIN OPENSSH PRIVATE KEY-----) or a personal access token'
-    );
-  }
+  throw new Error(
+      'Git clone needs a GitHub App, a personal access token, or an OPENSSH deploy key. git@ URLs cannot clone with no credential.'
+  );
+}
 
+async function createAskpassAuth(pat) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codehealer-askpass-'));
   const scriptPath = path.join(dir, 'askpass.sh');
   const script = `#!/bin/sh
@@ -69,6 +89,7 @@ esac
       SSH_ASKPASS_REQUIRE: 'force',
       CODEHEALER_GIT_TOKEN: pat,
     }),
+    fallbackGitEnv: null,
     resolveUrl: (repoUrl) => toHttpsGithubUrl(repoUrl),
     cleanup: () => fs.rm(dir, { recursive: true, force: true }),
   };

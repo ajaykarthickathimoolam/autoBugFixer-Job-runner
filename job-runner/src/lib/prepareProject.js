@@ -13,6 +13,7 @@ export async function prepareProject({ projectId, services, githubSshPrivateKey,
   try {
     gitAuth = await createGitAuth({ githubSshPrivateKey, githubPat });
     const gitEnv = gitAuth.gitEnv;
+    const fallbackGitEnv = gitAuth.fallbackGitEnv;
     for (const service of services) {
       const basePath = basePathFor(projectId, service.serviceId);
       try {
@@ -21,6 +22,7 @@ export async function prepareProject({ projectId, services, githubSshPrivateKey,
           repoUrl: gitAuth.resolveUrl(service.repoUrl),
           baseBranch: service.baseBranch,
           gitEnv,
+          fallbackGitEnv,
         });
         logger.info(`Prepared base clone for project ${projectId} service "${service.name}"`);
       } catch (err) {
