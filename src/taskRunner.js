@@ -7,13 +7,32 @@ import { runGptFixer } from './lib/gptFixer.js';
 import { createPullRequest } from './lib/github.js';
 import { runShell } from './lib/exec.js';
 import { basePathFor, taskRootFor, serviceDirFor, sanitizeBranchSegment } from './lib/workspace.js';
-import { buildFixPrompt, buildPlanPrompt, extractChangePlan } from './lib/prompt.js';
+import { buildFixPrompt, buildPlanPrompt, extractChangePlan, ticketTooVague, vagueTicketQuestion } from './lib/prompt.js';
 import { runSecurityScans } from './lib/securityScan.js';
 import { isToolchainFailure } from './lib/verify.js';
 import { clearAbort, throwIfAborted, TaskAbortedError } from './lib/abort.js';
 import { logger } from './lib/logger.js';
 
 const LOG_TRUNCATE_LENGTH = 4000;
+const STEP_ORDER = ['CLONE', 'FIX', 'VERIFY', 'SCAN', 'PUSH', 'PR'];
+
+const RESUME_LABELS = {
+  CLONE: 'clone',
+  FIX: 'the fix',
+  VERIFY: 'build and tests',
+  SCAN: 'security scans',
+  PUSH: 'the push',
+  PR: 'the pull request',
+};
+
+function normalizeResume(value) {
+  const step = String(value || 'CLONE').toUpperCase();
+  return STEP_ORDER.includes(step) ? step : 'CLONE';
+}
+
+function stepReached(resume, step) {
+  return STEP_ORDER.indexOf(resume) <= STEP_ORDER.indexOf(step);
+}
 
 function truncate(text) {
   if (!text) return '';
@@ -81,35 +100,74 @@ export async function runTask(task) {
   let gitAuth;
   let awaitingInput = false;
   let awaitingApproval = false;
+  let failed = false;
   const phase = (task.phase || 'EXECUTE').toUpperCase();
+  let resume = phase === 'PLAN' ? 'CLONE' : normalizeResume(task.resumeFrom);
   clearAbort(jobId);
 
   try {
+    const clarificationLevel = (task.clarificationLevel || 'MEDIUM').toUpperCase();
+    const skipAsk = clarificationLevel === 'NONE';
+    const alreadyApproved = !!(task.approvedChangePlan && String(task.approvedChangePlan).trim());
+    if (!skipAsk && !alreadyApproved && ticketTooVague(task)) {
+      const question = vagueTicketQuestion(task);
+      awaitingInput = true;
+      await reportLog(jobId, `Ticket is too vague to plan or fix — asking on the ticket: ${question}`);
+      await reportStatus(jobId, 'AWAITING_INPUT', { message: question });
+      return;
+    }
+
     gitAuth = await createGitAuth({
       githubSshPrivateKey: task.githubSshPrivateKey,
       githubPat: task.githubPat,
     });
     const gitEnv = gitAuth.gitEnv;
 
-    try {
-      await fs.rm(taskRoot, { recursive: true, force: true }).catch(() => {});
+      if (resume !== 'CLONE') {
+        await reportLog(jobId, `Resuming from ${RESUME_LABELS[resume] || resume}. Steps that already succeeded are skipped.`);
+      }
+      if (resume === 'PR') {
+        const onRemote = await anyRemoteBranch(task, branchName, gitAuth, gitEnv);
+        if (!onRemote) {
+          await reportLog(jobId, 'The feature branch is no longer on GitHub, so the fix will be applied again.');
+          resume = 'FIX';
+        }
+      } else if (resume === 'PUSH' && !(await workspaceReady(task, taskRoot))) {
+        const onRemote = await anyRemoteBranch(task, branchName, gitAuth, gitEnv);
+        if (onRemote) {
+          await reportLog(jobId, 'The feature branch is already on GitHub, so this retry opens the pull request.');
+          resume = 'PR';
+        } else {
+          await reportLog(jobId, 'The checkout from the failed run is gone, so the fix will be applied again.');
+          resume = 'FIX';
+        }
+      } else if ((resume === 'VERIFY' || resume === 'SCAN') && !(await workspaceReady(task, taskRoot))) {
+        await reportLog(jobId, 'The checkout from the failed run is gone, so the fix will be applied again.');
+        resume = 'FIX';
+      }
 
-      await requireGuard(jobId, 'CLONE');
-      await reportStatus(jobId, 'CLONING');
-      await reportLog(jobId, `Checking out and pulling the base branch for ${task.services.length} service(s)...`);
+      if (resume === 'CLONE' || resume === 'FIX') {
+        await fs.rm(taskRoot, { recursive: true, force: true }).catch(() => {});
+      }
 
-      const serviceDirs = [];
-      for (const service of task.services) {
-        throwIfAborted(jobId);
-        const basePath = basePathFor(task.projectId, service.serviceId);
-        const repoUrl = gitAuth.resolveUrl(service.repoUrl);
-        await git.ensureBaseClone({ basePath, repoUrl, baseBranch: service.baseBranch, gitEnv });
+      let serviceDirs = await loadServiceDirs(task, taskRoot);
+      if (resume === 'CLONE' || resume === 'FIX' || serviceDirs.length === 0 && resume !== 'PR') {
+        await requireGuard(jobId, 'CLONE');
+        await reportStatus(jobId, 'CLONING');
+        await reportLog(jobId, `Checking out and pulling the base branch for ${task.services.length} service(s)...`);
+        serviceDirs = [];
+        for (const service of task.services) {
+          throwIfAborted(jobId);
+          const basePath = basePathFor(task.projectId, service.serviceId);
+          const repoUrl = gitAuth.resolveUrl(service.repoUrl);
+          await git.ensureBaseClone({ basePath, repoUrl, baseBranch: service.baseBranch, gitEnv });
 
-        const dir = serviceDirFor(taskRoot, service.name);
-        await git.cloneLocalForTask(basePath, dir);
-        await git.configureIdentity(dir);
-        await git.createBranch(dir, branchName);
-        serviceDirs.push({ service, dir });
+          const dir = serviceDirFor(taskRoot, service.name);
+          await git.cloneLocalForTask(basePath, dir);
+          await git.configureIdentity(dir);
+          await git.createBranch(dir, branchName);
+          serviceDirs.push({ service, dir });
+        }
       }
 
       if (phase === 'PLAN') {
@@ -131,75 +189,87 @@ export async function runTask(task) {
         return;
       }
 
-      await requireGuard(jobId, 'FIX');
-      await reportStatus(jobId, 'FIXING');
-      const prompt = buildFixPrompt(task, serviceDirs, task.clarificationLevel);
-      const fixerOutput = await runFixer(task, taskRoot, prompt, jobId);
+      let changed = [];
+      if (stepReached(resume, 'FIX')) {
+        await requireGuard(jobId, 'FIX');
+        await reportStatus(jobId, 'FIXING');
+        const prompt = buildFixPrompt(task, serviceDirs, task.clarificationLevel);
+        const fixerOutput = await runFixer(task, taskRoot, prompt, jobId);
 
-      const needsInputMatch = fixerOutput.match(/^NEEDS_INPUT:\s*(.+)$/mi);
-      if (needsInputMatch) {
-        awaitingInput = true;
-        await reportLog(jobId, `Fixer paused - needs clarification: ${needsInputMatch[1].trim()}`);
-        await reportStatus(jobId, 'AWAITING_INPUT', { message: needsInputMatch[1].trim() });
-        return;
-      }
+        const needsInputMatch = fixerOutput.match(/^NEEDS_INPUT:\s*(.+)$/mi);
+        if (needsInputMatch) {
+          awaitingInput = true;
+          await reportLog(jobId, `Fixer paused - needs clarification: ${needsInputMatch[1].trim()}`);
+          await reportStatus(jobId, 'AWAITING_INPUT', { message: needsInputMatch[1].trim() });
+          return;
+        }
 
-      const changed = [];
-      for (const entry of serviceDirs) {
-        if (await git.hasChanges(entry.dir)) {
-          changed.push(entry);
+        for (const entry of serviceDirs) {
+          if (await git.hasChanges(entry.dir)) {
+            changed.push(entry);
+          }
+        }
+        if (changed.length === 0) {
+          throw new Error('Fixer made no changes in any service');
+        }
+        await reportLog(jobId, `Fixer changed ${changed.length} of ${serviceDirs.length} service(s): ${changed.map((c) => c.service.name).join(', ')}`);
+      } else if (resume !== 'PR') {
+        for (const entry of serviceDirs) {
+          const branch = await git.currentBranch(entry.dir);
+          if (branch === branchName || await git.hasChanges(entry.dir)) {
+            changed.push(entry);
+          }
+        }
+        if (changed.length === 0) {
+          throw new Error('Nothing left to continue from the failed run');
         }
       }
-      if (changed.length === 0) {
-        throw new Error('Fixer made no changes in any service');
-      }
-      await reportLog(jobId, `Fixer changed ${changed.length} of ${serviceDirs.length} service(s): ${changed.map((c) => c.service.name).join(', ')}`);
 
       const testsMustPass = task.testsMustPass !== false;
       const verifyNotes = [];
-      if (changed.some((c) => c.service.buildCommand || c.service.testCommand)) {
+      if (stepReached(resume, 'VERIFY') && changed.some((c) => c.service.buildCommand || c.service.testCommand)) {
         await requireGuard(jobId, 'VERIFY');
         await reportStatus(jobId, 'VERIFYING');
-      }
-      for (const { service, dir } of changed) {
-        throwIfAborted(jobId);
-        if (service.buildCommand) {
-          const buildResult = await runShell(service.buildCommand, { cwd: dir });
-          const output = `${buildResult.stdout}${buildResult.stderr}`;
-          const toolchain = buildResult.code !== 0 && isToolchainFailure(output);
-          await reportLog(
-              jobId,
-              `[${service.name}] Build command exited ${buildResult.code}\n${truncate(output)}`,
-              buildResult.code === 0 ? 'INFO' : toolchain ? 'WARN' : 'ERROR'
-          );
-          if (toolchain) {
-            const note = `[${service.name}] Build skipped as a runner toolchain issue (not a regression of this change).`;
-            verifyNotes.push(note);
-            await reportLog(jobId, note, 'WARN');
-          } else if (testsMustPass && buildResult.code !== 0) {
-            throw new Error(`[${service.name}] Build failed (exit ${buildResult.code})`);
+        for (const { service, dir } of changed) {
+          throwIfAborted(jobId);
+          if (service.buildCommand) {
+            const buildResult = await runShell(service.buildCommand, { cwd: dir });
+            const output = `${buildResult.stdout}${buildResult.stderr}`;
+            const toolchain = buildResult.code !== 0 && isToolchainFailure(output);
+            await reportLog(
+                jobId,
+                `[${service.name}] Build command exited ${buildResult.code}\n${truncate(output)}`,
+                buildResult.code === 0 ? 'INFO' : toolchain ? 'WARN' : 'ERROR'
+            );
+            if (toolchain) {
+              const note = `[${service.name}] Build skipped as a runner toolchain issue (not a regression of this change).`;
+              verifyNotes.push(note);
+              await reportLog(jobId, note, 'WARN');
+            } else if (testsMustPass && buildResult.code !== 0) {
+              throw new Error(`[${service.name}] Build failed (exit ${buildResult.code})`);
+            }
           }
-        }
-        if (service.testCommand) {
-          const testResult = await runShell(service.testCommand, { cwd: dir });
-          const output = `${testResult.stdout}${testResult.stderr}`;
-          const toolchain = testResult.code !== 0 && isToolchainFailure(output);
-          await reportLog(
-              jobId,
-              `[${service.name}] Test command exited ${testResult.code}\n${truncate(output)}`,
-              testResult.code === 0 ? 'INFO' : toolchain ? 'WARN' : 'ERROR'
-          );
-          if (toolchain) {
-            const note = `[${service.name}] Tests skipped as a runner toolchain issue (not a regression of this change).`;
-            verifyNotes.push(note);
-            await reportLog(jobId, note, 'WARN');
-          } else if (testsMustPass && testResult.code !== 0) {
-            throw new Error(`[${service.name}] Tests failed (exit ${testResult.code})`);
+          if (service.testCommand) {
+            const testResult = await runShell(service.testCommand, { cwd: dir });
+            const output = `${testResult.stdout}${testResult.stderr}`;
+            const toolchain = testResult.code !== 0 && isToolchainFailure(output);
+            await reportLog(
+                jobId,
+                `[${service.name}] Test command exited ${testResult.code}\n${truncate(output)}`,
+                testResult.code === 0 ? 'INFO' : toolchain ? 'WARN' : 'ERROR'
+            );
+            if (toolchain) {
+              const note = `[${service.name}] Tests skipped as a runner toolchain issue (not a regression of this change).`;
+              verifyNotes.push(note);
+              await reportLog(jobId, note, 'WARN');
+            } else if (testsMustPass && testResult.code !== 0) {
+              throw new Error(`[${service.name}] Tests failed (exit ${testResult.code})`);
+            }
           }
         }
       }
 
-      if (task.securityScansEnabled !== false) {
+      if (stepReached(resume, 'SCAN') && task.securityScansEnabled !== false) {
         await requireGuard(jobId, 'SCAN');
         await reportStatus(jobId, 'SCANNING');
         for (const { service, dir } of changed) {
@@ -213,16 +283,26 @@ export async function runTask(task) {
         }
       }
 
-      const scanBody = scanSummaries.length ? `\n\n## Security scans\n${scanSummaries.join('\n\n')}` : '';
+      const savedScan = task.securityScanSummary ? String(task.securityScanSummary).trim() : '';
+      const scanText = scanSummaries.length ? scanSummaries.join('\n\n') : savedScan;
+      const scanBody = scanText ? `\n\n## Security scans\n${scanText}` : '';
       const planBody = task.approvedChangePlan ? `\n\n## Approved change plan\n${task.approvedChangePlan}` : '';
       const verifyBody = verifyNotes.length
           ? `\n\n## Verification notes\n${verifyNotes.join('\n')}`
           : '';
+      const prBody = `Automated fix by CodeHealer for ticket ${task.ticketId}. Does not merge.\n\n${task.ticketDescription || ''}${planBody}${scanBody}${verifyBody}`;
 
-      for (const { service, dir } of changed) {
+      const publish = resume === 'PR' ? await servicesOnRemote(task, branchName, gitAuth, gitEnv) : changed;
+      if (publish.length === 0) {
+        throw new Error(`No feature branch named ${branchName} is on GitHub to open a pull request from`);
+      }
+
+      for (const { service, dir } of publish) {
         throwIfAborted(jobId);
-        await git.commitAll(dir, `Fix ${task.ticketId}: ${task.ticketTitle || 'automated fix'}`);
-        await git.pushBranch(dir, branchName, gitAuth.resolveUrl(service.repoUrl), gitEnv);
+        if (resume !== 'PR') {
+          await git.commitIfChanges(dir, `Fix ${task.ticketId}: ${task.ticketTitle || 'automated fix'}`);
+          await git.pushBranch(dir, branchName, gitAuth.resolveUrl(service.repoUrl), gitEnv);
+        }
 
         await requireGuard(jobId, 'CREATE_PR');
         const idemKey = `pr:${jobId}:${service.serviceId || service.name}`;
@@ -234,7 +314,7 @@ export async function runTask(task) {
             head: branchName,
             base: service.baseBranch,
             title: `Fix ${task.ticketId}: ${task.ticketTitle || 'automated fix'}`,
-            body: `Automated fix by CodeHealer for ticket ${task.ticketId}. Does not merge.\n\n${task.ticketDescription || ''}${planBody}${scanBody}${verifyBody}`,
+            body: prBody,
             pat: task.githubPat,
           });
           await rememberIdempotency(idemKey, jobId, 'CREATE_PR', prUrl);
@@ -247,14 +327,10 @@ export async function runTask(task) {
 
       await reportStatus(jobId, 'PR_CREATED', {
         prUrl: prUrls.join(', '),
-        securityScanSummary: scanSummaries.join('\n\n'),
+        securityScanSummary: scanText,
       });
-    } finally {
-      if (!awaitingInput && !awaitingApproval) {
-        await fs.rm(taskRoot, { recursive: true, force: true }).catch(() => {});
-      }
-    }
   } catch (err) {
+    failed = true;
     logger.error(`Task ${jobId} failed: ${err.stack || err.message}`);
     if (err instanceof TaskAbortedError) {
       await reportStatus(jobId, 'CANCELLED', { message: err.message });
@@ -264,9 +340,48 @@ export async function runTask(task) {
       await reportStatus(jobId, 'FAILED', { message: err.message });
     }
   } finally {
+    if (!awaitingInput && !awaitingApproval && !failed) {
+      await fs.rm(taskRoot, { recursive: true, force: true }).catch(() => {});
+    }
     if (gitAuth) {
       await gitAuth.cleanup();
     }
     clearAbort(jobId);
   }
+}
+
+async function workspaceReady(task, taskRoot) {
+  const dirs = await loadServiceDirs(task, taskRoot);
+  return dirs.length > 0;
+}
+
+async function loadServiceDirs(task, taskRoot) {
+  const dirs = [];
+  for (const service of task.services || []) {
+    const dir = serviceDirFor(taskRoot, service.name);
+    try {
+      await fs.access(`${dir}/.git`);
+      dirs.push({ service, dir });
+    } catch {
+      /* checkout was not kept */
+    }
+  }
+  return dirs;
+}
+
+async function anyRemoteBranch(task, branchName, gitAuth, gitEnv) {
+  for (const service of task.services || []) {
+    const sha = await git.remoteHead(gitAuth.resolveUrl(service.repoUrl), branchName, gitEnv);
+    if (sha) return true;
+  }
+  return false;
+}
+
+async function servicesOnRemote(task, branchName, gitAuth, gitEnv) {
+  const found = [];
+  for (const service of task.services || []) {
+    const sha = await git.remoteHead(gitAuth.resolveUrl(service.repoUrl), branchName, gitEnv);
+    if (sha) found.push({ service, dir: null });
+  }
+  return found;
 }

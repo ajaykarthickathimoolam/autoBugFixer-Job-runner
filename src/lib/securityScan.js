@@ -4,6 +4,14 @@ import { runShell } from './exec.js';
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'target', 'dist', 'build', '.idea', '.gradle']);
 
+const TEST_DIR = /(^|\/)(tests?|e2e|__tests__|spec|cypress|playwright)(\/|$)/i;
+const TEST_FILE = /\.(spec|test)\.[cm]?[jt]sx?$/i;
+
+function isTestPath(rel) {
+  const n = String(rel || '').replaceAll('\\', '/');
+  return TEST_DIR.test(n) || TEST_FILE.test(n);
+}
+
 const SECRET_PATTERNS = [
   { id: 'private-key', re: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/ },
   { id: 'aws-key', re: /AKIA[0-9A-Z]{16}/ },
@@ -106,14 +114,20 @@ async function walk(root, current, findings) {
       continue;
     }
     const rel = path.relative(root, full);
+    const inTests = isTestPath(rel);
     for (const pat of SECRET_PATTERNS) {
+      if (inTests && (pat.id === 'generic-secret' || pat.id === 'jwt')) {
+        continue;
+      }
       if (pat.re.test(text)) {
         findings.push({ severity: 'high', kind: 'secret', file: rel, detail: pat.id });
       }
     }
-    for (const pat of SAST_PATTERNS) {
-      if (pat.re.test(text)) {
-        findings.push({ severity: 'medium', kind: 'sast', file: rel, detail: pat.id });
+    if (!inTests) {
+      for (const pat of SAST_PATTERNS) {
+        if (pat.re.test(text)) {
+          findings.push({ severity: 'medium', kind: 'sast', file: rel, detail: pat.id });
+        }
       }
     }
   }

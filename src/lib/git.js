@@ -70,17 +70,66 @@ export async function hasChanges(taskPath) {
 }
 
 export async function commitAll(taskPath, message) {
+  const committed = await commitIfChanges(taskPath, message);
+  if (!committed) {
+    throw new Error('commit failed: nothing to commit');
+  }
+}
+
+/** Commits staged work. Returns false when the tree is already clean. */
+export async function commitIfChanges(taskPath, message) {
   await run('git', ['-C', taskPath, 'add', '-A']);
+  const staged = await run('git', ['-C', taskPath, 'diff', '--cached', '--quiet']);
+  if (staged.code === 0) {
+    return false;
+  }
   const result = await run('git', ['-C', taskPath, 'commit', '-m', message]);
   if (result.code !== 0) {
-    throw new Error(`commit failed: ${result.stderr}`);
+    throw new Error(`commit failed: ${redactGitOutput(result.stderr)}`);
   }
+  return true;
+}
+
+export async function currentBranch(taskPath) {
+  const result = await run('git', ['-C', taskPath, 'rev-parse', '--abbrev-ref', 'HEAD']);
+  if (result.code !== 0) {
+    throw new Error(`branch check failed: ${redactGitOutput(result.stderr)}`);
+  }
+  return result.stdout.trim();
+}
+
+/** SHA of the remote branch, or null when that branch does not exist. */
+export async function remoteHead(repoUrl, branchName, gitEnv) {
+  const result = await run('git', ['ls-remote', '--heads', repoUrl, `refs/heads/${branchName}`], { env: gitEnv });
+  if (result.code !== 0) {
+    throw new Error(`could not read remote branch: ${redactGitOutput(result.stderr)}`);
+  }
+  const line = result.stdout.trim().split('\n').find((entry) => entry.endsWith(`refs/heads/${branchName}`));
+  return line ? line.split(/\s+/)[0] : null;
 }
 
 export async function pushBranch(taskPath, branchName, remoteUrl, gitEnv) {
   await run('git', ['-C', taskPath, 'remote', 'set-url', 'origin', remoteUrl]);
-  const result = await run('git', ['-C', taskPath, 'push', '-u', 'origin', branchName], { env: gitEnv });
-  if (result.code !== 0) {
-    throw new Error(`push failed: ${result.stderr}`);
+  const refspec = `HEAD:refs/heads/${branchName}`;
+  const result = await run('git', ['-C', taskPath, 'push', '-u', 'origin', refspec], { env: gitEnv });
+  if (result.code === 0) {
+    return;
+  }
+  const detail = `${result.stderr}\n${result.stdout}`;
+  if (!/\[rejected\]|non-fast-forward|fetch first/i.test(detail)) {
+    throw new Error(`push failed: ${redactGitOutput(result.stderr)}`);
+  }
+  const fetched = await run('git', ['-C', taskPath, 'fetch', 'origin', `refs/heads/${branchName}`], { env: gitEnv });
+  if (fetched.code !== 0) {
+    throw new Error(`push failed: ${redactGitOutput(result.stderr)}`);
+  }
+  const expected = (await run('git', ['-C', taskPath, 'rev-parse', 'FETCH_HEAD'])).stdout.trim();
+  const forced = await run(
+      'git',
+      ['-C', taskPath, 'push', '-u', `--force-with-lease=refs/heads/${branchName}:${expected}`, 'origin', refspec],
+      { env: gitEnv }
+  );
+  if (forced.code !== 0) {
+    throw new Error(`push failed: ${redactGitOutput(forced.stderr || result.stderr)}`);
   }
 }

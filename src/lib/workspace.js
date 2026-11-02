@@ -1,6 +1,26 @@
+import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
-const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT || '/workspace';
+const LOCAL_WORKSPACE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../workspace');
+
+function resolveWorkspaceRoot() {
+  if (process.env.WORKSPACE_ROOT) {
+    return process.env.WORKSPACE_ROOT;
+  }
+  try {
+    fs.accessSync('/workspace', fs.constants.W_OK);
+    return '/workspace';
+  } catch {
+    return LOCAL_WORKSPACE;
+  }
+}
+
+const WORKSPACE_ROOT = resolveWorkspaceRoot();
+
+export function workspaceRoot() {
+  return WORKSPACE_ROOT;
+}
 
 /** IDs are Mongo-generated (ObjectId hex / UUID) but sanitized anyway before touching the filesystem. */
 export function sanitizePathSegment(value) {
