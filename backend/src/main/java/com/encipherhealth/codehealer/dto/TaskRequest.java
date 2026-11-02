@@ -32,6 +32,9 @@ public record TaskRequest(
         boolean securityScansEnabled,
         String sageContext,
         String resumeFrom,
-        String securityScanSummary
+        String securityScanSummary,
+        String securityRemediationPlan,
+        int securityRemediationAttempts,
+        String approvedDiffScope
 ) {
 }

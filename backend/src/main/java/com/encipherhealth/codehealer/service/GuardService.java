@@ -60,6 +60,9 @@ public class GuardService {
                                 + ". Disarm it in Admin → Settings, then Resume.";
                 return denyAndTrace(job, action, actor, reason, "PAUSED");
             }
+            if (!operatorResume && job != null && job.isStopRequested()) {
+                return denyAndTrace(job, action, actor, "Stop requested. Waiting for the worker to exit.", "CANCELLED");
+            }
             if (!operatorResume && job != null && job.getStatus() != null
                     && BLOCKED_JOB_STATUSES.contains(job.getStatus())) {
                 return denyAndTrace(job, action, actor,

@@ -22,7 +22,7 @@ export function ProjectsPage() {
   }, []);
 
   async function remove(id: string) {
-    if (!confirm('Delete this project? This cannot be undone.')) return;
+    if (!confirm('Delete this project? This removes it from CodeHealer. It does not revoke the GitHub token, GitHub App, or SSH key. Revoke those on GitHub separately.')) return;
     await api.deleteProject(id);
     await load();
   }

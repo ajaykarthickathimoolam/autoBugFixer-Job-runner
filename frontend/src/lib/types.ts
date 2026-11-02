@@ -114,11 +114,24 @@ export interface JobResponse {
   cancelledBy: string | null;
   cancellationReason: string | null;
   securityScanSummary: string | null;
+  securityRemediationPlan: string | null;
+  pendingApproval: 'CHANGE_PLAN' | 'SECURITY' | 'DIFF_SCOPE' | string | null;
   l1Classification: string | null;
   l1DraftResponse: string | null;
   l1Citations: SageCitation[] | null;
   l1EscalationReason: string | null;
   resumeFrom: string | null;
+  llmProvider: string | null;
+  filesRead: string[] | null;
+  filesChanged: string[] | null;
+  commandsRun: string[] | null;
+  testsNotRun: string | null;
+  diffScopeSummary: string | null;
+  stopRequested: boolean;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  prDisposition: 'ACCEPTED' | 'REJECTED' | string | null;
+  prDispositionBy: string | null;
 }
 
 export interface JobPageResponse {
@@ -156,6 +169,9 @@ export interface ProjectResponse {
   hasCliqWebhook: boolean;
   hasGithubSshKey: boolean;
   hasGithubPat: boolean;
+  hasGithubApp?: boolean;
+  githubAppId?: string | null;
+  githubAppInstallationId?: string | null;
   zohoTeamId: string | null;
   zohoProjectIdExternal: string | null;
   hasZohoOAuthCredentials: boolean;
@@ -179,6 +195,12 @@ export interface ProjectInput {
   zohoCliqWebhookUrl?: string;
   githubSshPrivateKey?: string;
   githubPat?: string;
+  clearGithubPat?: boolean;
+  clearGithubSshKey?: boolean;
+  githubAppId?: string;
+  githubAppInstallationId?: string;
+  githubAppPrivateKey?: string;
+  clearGithubAppPrivateKey?: boolean;
   zohoTeamId?: string;
   zohoProjectIdExternal?: string;
   zohoOAuthClientId?: string;

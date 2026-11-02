@@ -30,6 +30,7 @@ const RESUME_LABELS: Record<string, string> = {
   FIX: 'the fix',
   VERIFY: 'build and tests',
   SCAN: 'security scans',
+  REMEDIATE: 'the approved security fix',
   PUSH: 'the push',
   PR: 'the pull request',
 };
@@ -190,6 +191,15 @@ export function JobDetailPage() {
           </div>
         </div>
 
+        {job.stopRequested && job.status !== 'CANCELLED' && job.status !== 'FAILED' && (
+            <div className="rounded-2xl border border-[color:var(--color-accent-amber)]/40 bg-[color:var(--color-accent-amber)]/5 p-4">
+              <p className="text-sm font-medium text-[color:var(--color-accent-amber)]">Stopping</p>
+              <p className="mt-1 text-sm text-[color:var(--color-text-100)]">
+                Cancel was requested. This stays on the current stage until the worker process has exited.
+              </p>
+            </div>
+        )}
+
         {error && (
             <p className="text-sm text-[color:var(--color-accent-red)]">{error}</p>
         )}
@@ -228,7 +238,80 @@ export function JobDetailPage() {
             </div>
         )}
 
-        {job.status === 'AWAITING_APPROVAL' && (
+        {job.status === 'AWAITING_APPROVAL' && job.pendingApproval === 'SECURITY' && (
+            <div className="rounded-2xl border border-[color:var(--color-accent-amber)]/40 bg-[color:var(--color-accent-amber)]/5 p-4">
+              <p className="text-sm font-medium text-[color:var(--color-accent-amber)]">
+                Security findings waiting for approval
+              </p>
+              <p className="mt-1 text-xs text-[color:var(--color-text-400)]">
+                Approving applies these steps in the existing checkout, re-runs build and tests, then runs the security scan again. The pull request opens only if that scan is clean.
+              </p>
+              <pre className="mt-3 whitespace-pre-wrap font-mono-brand text-xs text-[color:var(--color-text-100)]">
+                {job.securityRemediationPlan}
+              </pre>
+              {job.securityScanSummary && (
+                  <pre className="mt-3 whitespace-pre-wrap font-mono-brand text-xs text-[color:var(--color-text-400)]">
+                    {job.securityScanSummary}
+                  </pre>
+              )}
+              <div className="mt-3 flex gap-2">
+                <button
+                    onClick={() => id && act('Approve', () => api.approveJob(id))}
+                    disabled={!!acting}
+                    className="rounded-lg bg-[color:var(--color-accent-green)] px-4 py-2 text-sm font-semibold text-[color:var(--color-on-positive)] disabled:opacity-50"
+                >
+                  {acting === 'Approve' ? 'Approving…' : 'Approve and rescan'}
+                </button>
+                <button
+                    onClick={() => {
+                      if (!id) return;
+                      const reason = prompt('Reject reason') ?? undefined;
+                      act('Reject', () => api.rejectJob(id, reason));
+                    }}
+                    disabled={!!acting}
+                    className="rounded-lg border border-[color:var(--color-accent-red)]/40 px-4 py-2 text-sm text-[color:var(--color-accent-red)] disabled:opacity-50"
+                >
+                  {acting === 'Reject' ? 'Rejecting…' : 'Reject'}
+                </button>
+              </div>
+            </div>
+        )}
+
+        {job.status === 'AWAITING_APPROVAL' && job.pendingApproval === 'DIFF_SCOPE' && (
+            <div className="rounded-2xl border border-[color:var(--color-accent-amber)]/40 bg-[color:var(--color-accent-amber)]/5 p-4">
+              <p className="text-sm font-medium text-[color:var(--color-accent-amber)]">
+                Change set waiting for approval
+              </p>
+              <p className="mt-1 text-xs text-[color:var(--color-text-400)]">
+                This diff is larger than usual or it touches workflow or credential files. Approving commits this exact list and opens a pull request. CodeHealer does not merge it.
+              </p>
+              <pre className="mt-3 whitespace-pre-wrap font-mono-brand text-xs text-[color:var(--color-text-100)]">
+                {job.diffScopeSummary}
+              </pre>
+              <div className="mt-3 flex gap-2">
+                <button
+                    onClick={() => id && act('Approve', () => api.approveJob(id))}
+                    disabled={!!acting}
+                    className="rounded-lg bg-[color:var(--color-accent-green)] px-4 py-2 text-sm font-semibold text-[color:var(--color-on-positive)] disabled:opacity-50"
+                >
+                  {acting === 'Approve' ? 'Approving…' : 'Approve this file list'}
+                </button>
+                <button
+                    onClick={() => {
+                      if (!id) return;
+                      const reason = prompt('Reject reason') ?? undefined;
+                      act('Reject', () => api.rejectJob(id, reason));
+                    }}
+                    disabled={!!acting}
+                    className="rounded-lg border border-[color:var(--color-accent-red)]/40 px-4 py-2 text-sm text-[color:var(--color-accent-red)] disabled:opacity-50"
+                >
+                  {acting === 'Reject' ? 'Rejecting…' : 'Reject'}
+                </button>
+              </div>
+            </div>
+        )}
+
+        {job.status === 'AWAITING_APPROVAL' && job.pendingApproval !== 'SECURITY' && job.pendingApproval !== 'DIFF_SCOPE' && (
             <div className="rounded-2xl border border-[color:var(--color-accent-violet)]/40 bg-[color:var(--color-accent-violet)]/5 p-4">
               <p className="text-sm font-medium text-[color:var(--color-accent-violet)]">
                 {job.missionType === 'L1_SUPPORT' ? 'L1 draft waiting for approval' : 'Change plan waiting for approval'}
@@ -295,6 +378,59 @@ export function JobDetailPage() {
               </button>
             </div>
         )}
+
+        <div className="glow-border rounded-2xl bg-[color:var(--color-panel-900)]/80 p-6">
+          <h2 className="mb-2 text-sm font-semibold text-[color:var(--color-text-400)]">What this job did</h2>
+          <p className="text-sm text-[color:var(--color-text-100)]">
+            Provider: {job.llmProvider || 'Not recorded yet'}
+          </p>
+          <p className="mt-2 text-xs text-[color:var(--color-text-400)]">
+            {job.llmProvider === 'Claude'
+                ? 'Claude Code reads the checkout through its own tools. CodeHealer does not receive a file-by-file list from Claude.'
+                : 'Files the model read are listed when the fixer uses its file tools. Secret files such as .env and private keys are refused.'}
+          </p>
+          <EvidenceList label="Files read" values={job.filesRead} empty="None recorded" />
+          <EvidenceList label="Files changed" values={job.filesChanged} empty="None recorded" />
+          <EvidenceList label="Commands" values={job.commandsRun} empty="None recorded" />
+          <p className="mt-3 text-sm text-[color:var(--color-text-100)]">
+            Tests: {testsLabel(job)}
+          </p>
+          {(job.promptTokens || job.completionTokens) && (
+              <p className="mt-2 text-xs text-[color:var(--color-text-400)]">
+                Model tokens recorded for this job: {job.promptTokens ?? 0} prompt, {job.completionTokens ?? 0} completion. This is usage, not a time-saved estimate.
+              </p>
+          )}
+          {job.prUrl && (
+              <div className="mt-4 border-t border-[color:var(--color-border-800)] pt-3">
+                <p className="text-sm text-[color:var(--color-text-100)]">Was the pull request accepted?</p>
+                <p className="mt-1 text-xs text-[color:var(--color-text-400)]">
+                  Record the outcome after a person reviews it. CodeHealer does not turn this into an hours-saved number.
+                </p>
+                {job.prDisposition ? (
+                    <p className="mt-2 text-sm text-[color:var(--color-text-100)]">
+                      Marked {job.prDisposition.toLowerCase()}{job.prDispositionBy ? ` by ${job.prDispositionBy}` : ''}.
+                    </p>
+                ) : (
+                    <div className="mt-2 flex gap-2">
+                      <button
+                          onClick={() => id && act('Accept PR', () => api.recordDisposition(id, 'ACCEPTED'))}
+                          disabled={!!acting}
+                          className="rounded-lg border border-[color:var(--color-accent-green)]/40 px-3 py-1.5 text-xs text-[color:var(--color-accent-green)] disabled:opacity-50"
+                      >
+                        Mark accepted
+                      </button>
+                      <button
+                          onClick={() => id && act('Reject PR', () => api.recordDisposition(id, 'REJECTED'))}
+                          disabled={!!acting}
+                          className="rounded-lg border border-[color:var(--color-border-800)] px-3 py-1.5 text-xs text-[color:var(--color-accent-red)] disabled:opacity-50"
+                      >
+                        Mark rejected
+                      </button>
+                    </div>
+                )}
+              </div>
+          )}
+        </div>
 
         <div className="glow-border grid grid-cols-2 gap-4 rounded-2xl bg-[color:var(--color-panel-900)]/80 p-6 sm:grid-cols-3">
           <InfoField label="Project" value={job.projectName ?? '—'} />
@@ -373,7 +509,7 @@ export function JobDetailPage() {
             </div>
         )}
 
-        {job.changePlan && job.status !== 'AWAITING_APPROVAL' && (
+        {job.changePlan && (job.status !== 'AWAITING_APPROVAL' || job.pendingApproval === 'SECURITY') && (
             <div className="glow-border rounded-2xl bg-[color:var(--color-panel-900)]/80 p-6">
               <h2 className="mb-2 text-sm font-semibold text-[color:var(--color-text-400)]">
                 Change plan {job.approvedBy ? `(approved by ${job.approvedBy})` : ''}
@@ -422,6 +558,30 @@ export function JobDetailPage() {
                 ))}
               </div>
             </div>
+        )}
+      </div>
+  );
+}
+
+function testsLabel(job: JobResponse) {
+  if (job.testsNotRun == null) return 'Build and tests have not been recorded yet.';
+  if (job.testsNotRun.trim() === '') {
+    return 'A test command was configured and executed. A passing result does not prove the fix is correct.';
+  }
+  return `No test command is configured for ${job.testsNotRun}. Tests were not run for those services.`;
+}
+
+function EvidenceList({ label, values, empty }: { label: string; values: string[] | null; empty: string }) {
+  const items = values ?? [];
+  return (
+      <div className="mt-3">
+        <p className="text-xs font-medium text-[color:var(--color-text-400)]">{label}</p>
+        {items.length === 0 ? (
+            <p className="text-xs text-[color:var(--color-text-600)]">{empty}</p>
+        ) : (
+            <ul className="mt-1 max-h-40 overflow-y-auto font-mono-brand text-xs text-[color:var(--color-text-100)]">
+              {items.map((item) => <li key={item}>{item}</li>)}
+            </ul>
         )}
       </div>
   );

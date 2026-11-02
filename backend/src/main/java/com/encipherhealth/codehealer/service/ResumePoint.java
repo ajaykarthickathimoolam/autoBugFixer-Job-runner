@@ -31,7 +31,13 @@ public final class ResumePoint {
         if (reason.contains("push failed")) {
             return "PUSH";
         }
-        if (reason.contains("security scan failed")) {
+        if (reason.contains("diff scope rejected")) {
+            return "PUSH";
+        }
+        if (reason.contains("security remediation made no changes")) {
+            return "REMEDIATE";
+        }
+        if (reason.contains("security remediation rejected") || reason.contains("security scan failed")) {
             return "SCAN";
         }
         if (reason.contains("build failed") || reason.contains("tests failed")) {
@@ -59,7 +65,7 @@ public final class ResumePoint {
     public static String guardAction(String resumeFrom) {
         return switch (normalize(resumeFrom)) {
             case "PLAN" -> "ANALYZE";
-            case "FIX" -> "FIX";
+            case "FIX", "REMEDIATE" -> "FIX";
             case "VERIFY" -> "VERIFY";
             case "SCAN" -> "SCAN";
             case "PUSH", "PR" -> "CREATE_PR";
@@ -75,7 +81,7 @@ public final class ResumePoint {
     private static boolean isDispatchFailure(String reason) {
         return reason.startsWith("failed to start job-runner")
                 || reason.startsWith("failed to resume job-runner")
-                || reason.startsWith("timed out waiting");
+                || reason.contains("timed out");
     }
 
     private static String normalize(String resumeFrom) {

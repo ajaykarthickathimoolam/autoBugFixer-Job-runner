@@ -7,6 +7,8 @@ import com.encipherhealth.codehealer.model.MissionType;
 import com.encipherhealth.codehealer.model.Project;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
+
 @Component
 public class JobMapper {
 
@@ -37,13 +39,26 @@ public class JobMapper {
                 job.getCancelledBy(),
                 job.getCancellationReason(),
                 job.getSecurityScanSummary(),
+                job.getSecurityRemediationPlan(),
+                job.getPendingApproval(),
                 job.getL1Classification(),
                 job.getL1DraftResponse(),
                 job.getL1Citations(),
                 job.getL1EscalationReason(),
                 job.getStatus() == JobStatus.FAILED
                         ? ResumePoint.forFailedJob(job)
-                        : null
+                        : null,
+                job.getLlmProvider(),
+                job.getFilesRead() == null ? List.of() : job.getFilesRead(),
+                job.getFilesChanged() == null ? List.of() : job.getFilesChanged(),
+                job.getCommandsRun() == null ? List.of() : job.getCommandsRun(),
+                job.getTestsNotRun(),
+                job.getDiffScopeSummary(),
+                job.isStopRequested(),
+                job.getPromptTokens(),
+                job.getCompletionTokens(),
+                job.getPrDisposition(),
+                job.getPrDispositionBy()
         );
     }
 }

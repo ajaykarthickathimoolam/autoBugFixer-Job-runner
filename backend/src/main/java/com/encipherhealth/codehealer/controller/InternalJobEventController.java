@@ -12,6 +12,7 @@ import com.encipherhealth.codehealer.service.ExceptionQueueService;
 import com.encipherhealth.codehealer.service.GuardService;
 import com.encipherhealth.codehealer.service.IdempotencyService;
 import com.encipherhealth.codehealer.service.JobCompletionRegistry;
+import com.encipherhealth.codehealer.service.SecretRedactor;
 import com.encipherhealth.codehealer.service.SseBroadcastService;
 import com.encipherhealth.codehealer.service.TraceService;
 import com.encipherhealth.codehealer.service.ticket.TicketPlatformRegistry;
@@ -31,6 +32,9 @@ import org.springframework.web.bind.annotation.RestController;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
 
 /**
  * Receives progress callbacks from the job-runner as it works a task
@@ -73,9 +77,12 @@ public class InternalJobEventController {
             job.getLogs().add(JobLogEntry.builder()
                     .timestamp(Instant.now())
                     .level(event.logLevel() != null ? event.logLevel() : "INFO")
-                    .message(event.logMessage())
+                    .message(SecretRedactor.redact(event.logMessage()))
                     .build());
         }
+
+        String safeMessage = SecretRedactor.redact(event.message());
+        applyEvidence(job, event);
 
         JobStatus newStatus = event.status() != null ? JobStatus.valueOf(event.status()) : null;
         if (newStatus != null) {
@@ -84,14 +91,28 @@ public class InternalJobEventController {
                 job.setPrUrl(event.prUrl());
             }
             if (newStatus == JobStatus.FAILED) {
-                job.setFailureReason(event.message());
+                job.setFailureReason(safeMessage);
+                job.setStopRequested(false);
+            }
+            if (newStatus == JobStatus.CANCELLED) {
+                job.setStopRequested(false);
             }
             if (newStatus == JobStatus.AWAITING_INPUT) {
-                job.setPendingQuestion(event.message());
+                job.setPendingQuestion(safeMessage);
             }
             if (newStatus == JobStatus.AWAITING_APPROVAL) {
-                String plan = event.changePlan() != null ? event.changePlan() : event.message();
-                job.setChangePlan(plan);
+                if (event.diffScopeSummary() != null && !event.diffScopeSummary().isBlank()) {
+                    job.setDiffScopeSummary(SecretRedactor.redact(event.diffScopeSummary()));
+                    job.setDiffScopeFiles(event.diffScopeFiles() == null ? new java.util.ArrayList<>() : event.diffScopeFiles());
+                    job.setPendingApproval("DIFF_SCOPE");
+                } else if (event.securityRemediationPlan() != null && !event.securityRemediationPlan().isBlank()) {
+                    job.setSecurityRemediationPlan(event.securityRemediationPlan());
+                    job.setPendingApproval("SECURITY");
+                } else {
+                    String plan = event.changePlan() != null ? event.changePlan() : safeMessage;
+                    job.setChangePlan(plan);
+                    job.setPendingApproval("CHANGE_PLAN");
+                }
             }
             if (newStatus == JobStatus.PAUSED) {
                 job.setPausedBy("guard");
@@ -109,7 +130,7 @@ public class InternalJobEventController {
 
         if (newStatus != null) {
             traceService.record(jobId, job.getProjectId(), "OUTCOME", "workforce", newStatus.name(),
-                    event.message() != null ? event.message() : event.logMessage());
+                    safeMessage != null ? safeMessage : SecretRedactor.redact(event.logMessage()));
         }
 
         Project project = projectRepository.findById(job.getProjectId()).orElse(null);
@@ -133,7 +154,7 @@ public class InternalJobEventController {
                 cliqNotificationService.notifyFailure(project, job);
                 ticketPlatformRegistry.forProject(project).notifyFailure(project, job);
             }
-            exceptionQueueService.open(job, "JOB_FAILED", event.message());
+            exceptionQueueService.open(job, "JOB_FAILED", safeMessage);
             jobCompletionRegistry.complete(jobId);
         } else if (newStatus == JobStatus.PAUSED || newStatus == JobStatus.CANCELLED) {
             jobCompletionRegistry.complete(jobId);
@@ -141,7 +162,7 @@ public class InternalJobEventController {
             // Hold the per-service lock until approve/reject, same as AWAITING_INPUT.
         } else if (newStatus == JobStatus.AWAITING_INPUT && project != null) {
             try {
-                ticketPlatformRegistry.forProject(project).postQuestion(project, job, event.message());
+                ticketPlatformRegistry.forProject(project).postQuestion(project, job, safeMessage);
             } catch (Exception e) {
                 log.warn("Failed to post clarifying question to ticket for job {}: {}", jobId, e.getMessage());
             }
@@ -185,6 +206,39 @@ public class InternalJobEventController {
         String stored = idempotencyService.remember(
                 body.get("key"), body.get("jobId"), body.get("action"), body.get("result"));
         return ResponseEntity.ok(java.util.Map.of("result", stored == null ? "" : stored));
+    }
+
+    private void applyEvidence(Job job, InternalJobEventRequest event) {
+        if (event.llmProvider() != null && !event.llmProvider().isBlank()) {
+            job.setLlmProvider(event.llmProvider());
+        }
+        if (event.filesRead() != null) {
+            job.setFilesRead(merge(job.getFilesRead(), event.filesRead()));
+        }
+        if (event.filesChanged() != null) {
+            job.setFilesChanged(merge(job.getFilesChanged(), event.filesChanged()));
+        }
+        if (event.commandsRun() != null) {
+            job.setCommandsRun(merge(job.getCommandsRun(), event.commandsRun()));
+        }
+        if (event.testsNotRun() != null) {
+            job.setTestsNotRun(event.testsNotRun());
+        }
+        if (event.promptTokens() != null && event.promptTokens() > 0) {
+            job.setPromptTokens(event.promptTokens());
+        }
+        if (event.completionTokens() != null && event.completionTokens() > 0) {
+            job.setCompletionTokens(event.completionTokens());
+        }
+    }
+
+    private static List<String> merge(List<String> existing, List<String> incoming) {
+        LinkedHashSet<String> values = new LinkedHashSet<>();
+        if (existing != null) {
+            values.addAll(existing);
+        }
+        values.addAll(incoming);
+        return new ArrayList<>(values).stream().limit(100).toList();
     }
 
     private boolean isValidSecret(String provided) {

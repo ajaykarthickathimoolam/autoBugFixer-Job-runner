@@ -11,12 +11,14 @@ services:
     image: mongo:7
     container_name: codehealer-mongodb
     restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USERNAME:?Set MONGO_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?Set MONGO_PASSWORD}
+    command: ["mongod", "--bind_ip_all", "--auth"]
     volumes:
       - mongo-data:/data/db
-    ports:
-      - "27017:27017"
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      test: ["CMD-SHELL", "mongosh --quiet -u \"$$MONGO_INITDB_ROOT_USERNAME\" -p \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval 'db.adminCommand({ ping: 1 }).ok'"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -34,17 +36,17 @@ services:
       mongodb:
         condition: service_healthy
     environment:
-      SPRING_DATA_MONGODB_URI: mongodb://mongodb:27017/codehealer
-      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-min-32-chars}
-      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-ZGV2LW9ubHktMzItYnl0ZS1rZXktY2hhbmdlIQ==}
+      SPRING_DATA_MONGODB_URI: mongodb://${MONGO_USERNAME}:${MONGO_PASSWORD}@mongodb:27017/codehealer?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:?Set APP_ENCRYPTION_KEY}
       JOB_RUNNER_URL: http://job-runner:4100
-      JOB_RUNNER_SHARED_SECRET: ${JOB_RUNNER_SHARED_SECRET:-dev-shared-secret}
+      JOB_RUNNER_SHARED_SECRET: ${JOB_RUNNER_SHARED_SECRET:?Set JOB_RUNNER_SHARED_SECRET}
       ZOHO_ACCOUNTS_BASE_URL: ${ZOHO_ACCOUNTS_BASE_URL:-https://accounts.zoho.com}
       ZOHO_SPRINTS_API_BASE_URL: ${ZOHO_SPRINTS_API_BASE_URL:-https://sprintsapi.zoho.com/zsapi}
       JIRA_WEBHOOK_SECRET: ${JIRA_WEBHOOK_SECRET:-}
       APP_CORS_ORIGIN: ${APP_CORS_ORIGIN:-http://localhost:5173,http://127.0.0.1:5173}
-      SEED_ADMIN_USERNAME: ${SEED_ADMIN_USERNAME:-sarathi}
-      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-sarathi@7}
+      SEED_ADMIN_USERNAME: ${SEED_ADMIN_USERNAME:-admin}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?Set SEED_ADMIN_PASSWORD}
     ports:
       - "8080:8080"
     healthcheck:
@@ -71,8 +73,12 @@ services:
       HOME: /home/node
       WORKSPACE_ROOT: /workspace
       BACKEND_INTERNAL_URL: http://backend:8080
-      JOB_RUNNER_SHARED_SECRET: ${JOB_RUNNER_SHARED_SECRET:-dev-shared-secret}
+      JOB_RUNNER_SHARED_SECRET: ${JOB_RUNNER_SHARED_SECRET:?Set JOB_RUNNER_SHARED_SECRET}
       GIT_TERMINAL_PROMPT: "0"
+      CODEHEALER_REQUIRE_SANDBOX: "true"
+    security_opt:
+      - seccomp:unconfined
+      - apparmor:unconfined
     volumes:
       - job-workspace:/workspace
       - job-runner-claude-home:/home/node

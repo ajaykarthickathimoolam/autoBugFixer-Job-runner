@@ -39,6 +39,7 @@ public class JobOrchestrationService {
     private final GuardService guardService;
     private final SageService sageService;
     private final ExceptionQueueService exceptionQueueService;
+    private final GithubAppTokenService githubAppTokenService;
 
     public void run(Job job, Project project) {
         jobCompletionRegistry.register(job.getId());
@@ -94,7 +95,21 @@ public class JobOrchestrationService {
                 jobCompletionRegistry.register(job.getId());
                 continue;
             }
-            failJob(latest, project, "Timed out waiting for job-runner to complete");
+            try {
+                jobRunnerClient.abortTask(latest.getId(), "TIMEOUT");
+            } catch (Exception abortError) {
+                log.warn("Failed to abort timed-out job {}: {}", latest.getId(), abortError.getMessage());
+            }
+            jobCompletionRegistry.register(latest.getId());
+            jobCompletionRegistry.awaitCompletion(latest.getId(), Duration.ofSeconds(20));
+            Job after = jobRepository.findById(latest.getId()).orElse(latest);
+            if (after.getStatus() == JobStatus.NOTIFIED || after.getStatus() == JobStatus.FAILED
+                    || after.getStatus() == JobStatus.CANCELLED || after.getStatus() == JobStatus.PAUSED
+                    || after.getStatus() == JobStatus.CLOSED || after.getStatus() == JobStatus.ESCALATED
+                    || after.getStatus() == JobStatus.PR_CREATED) {
+                return;
+            }
+            failJob(after, project, "Timed out waiting for the job-runner, and the worker did not stop");
             return;
         }
     }
@@ -131,15 +146,16 @@ public class JobOrchestrationService {
     }
 
     private void failJob(Job job, Project project, String reason) {
+        String safe = SecretRedactor.redact(reason);
         job.transitionTo(JobStatus.FAILED);
-        job.setFailureReason(reason);
+        job.setFailureReason(safe);
         job.setUpdatedAt(Instant.now());
         jobRepository.save(job);
         sseBroadcastService.broadcastJobUpdate(job);
         if (project != null) {
             cliqNotificationService.notifyFailure(project, job);
         }
-        exceptionQueueService.open(job, "JOB_FAILED", reason);
+        exceptionQueueService.open(job, "JOB_FAILED", safe);
     }
 
     private TaskRequest buildTaskRequest(Job job, Project project) {
@@ -167,7 +183,8 @@ public class JobOrchestrationService {
         boolean testsMustPass = settings == null || settings.isTestsMustPass();
         boolean scansEnabled = settings == null || settings.isSecurityScansEnabled();
         boolean execute = job.getApprovedBy() != null && job.getChangePlan() != null && !job.getChangePlan().isBlank();
-        String phase = requireApproval && !execute ? "PLAN" : "EXECUTE";
+        boolean securityResume = "REMEDIATE".equalsIgnoreCase(job.getResumeFrom());
+        String phase = requireApproval && !execute && !securityResume ? "PLAN" : "EXECUTE";
         String sageContext = sageService.formatForPrompt(
                 sageService.retrieve(job.getProjectId(),
                         (job.getTicketTitle() == null ? "" : job.getTicketTitle()) + " "
@@ -184,7 +201,7 @@ public class JobOrchestrationService {
                 project.getArchitectureMd(),
                 services,
                 encryptionService.decrypt(project.getGithubSshPrivateKeyEncrypted()),
-                encryptionService.decrypt(project.getGithubPatEncrypted()),
+                githubAppTokenService.accessToken(project),
                 blankToNull(claudeToken),
                 clarificationLevel,
                 llmProvider,
@@ -199,7 +216,10 @@ public class JobOrchestrationService {
                 scansEnabled,
                 sageContext,
                 job.getResumeFrom(),
-                job.getSecurityScanSummary()
+                job.getSecurityScanSummary(),
+                job.getSecurityRemediationPlan(),
+                job.getSecurityRemediationAttempts(),
+                job.getApprovedDiffScope()
         );
     }
 

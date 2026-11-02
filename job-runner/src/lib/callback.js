@@ -1,7 +1,8 @@
 import { logger } from './logger.js';
+import { redactSecrets } from './redact.js';
 
 const BACKEND_URL = process.env.BACKEND_INTERNAL_URL || 'http://backend:8080';
-const SHARED_SECRET = process.env.JOB_RUNNER_SHARED_SECRET || 'dev-shared-secret';
+const SHARED_SECRET = process.env.JOB_RUNNER_SHARED_SECRET || '';
 
 export async function reportEvent(jobId, event) {
   try {
@@ -22,11 +23,13 @@ export async function reportEvent(jobId, event) {
 }
 
 export function reportLog(jobId, message, level = 'INFO') {
-  return reportEvent(jobId, { logMessage: message, logLevel: level });
+  return reportEvent(jobId, { logMessage: redactSecrets(message), logLevel: level });
 }
 
 export function reportStatus(jobId, status, extra = {}) {
-  return reportEvent(jobId, { status, ...extra });
+  const payload = { status, ...extra };
+  if (payload.message) payload.message = redactSecrets(payload.message);
+  return reportEvent(jobId, payload);
 }
 
 /**

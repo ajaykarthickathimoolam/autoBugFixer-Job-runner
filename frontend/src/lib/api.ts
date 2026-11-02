@@ -154,6 +154,8 @@ export const api = {
   approveJob: (id: string) => request<JobResponse>(`/jobs/${id}/approve`, { method: 'POST' }),
   rejectJob: (id: string, reason?: string) =>
       request<JobResponse>(`/jobs/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  recordDisposition: (id: string, disposition: 'ACCEPTED' | 'REJECTED') =>
+      request<JobResponse>(`/jobs/${id}/disposition`, { method: 'POST', body: JSON.stringify({ disposition }) }),
   answerJob: (id: string, answer: string) =>
       request<JobResponse>(`/jobs/${id}/answer`, { method: 'POST', body: JSON.stringify({ answer }) }),
   jobTrace: (id: string) => request<TraceEvent[]>(`/jobs/${id}/trace`),

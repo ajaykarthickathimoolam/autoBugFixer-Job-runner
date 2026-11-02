@@ -37,7 +37,7 @@ public class Job {
     private String prUrl;
     private String failureReason;
     /**
-     * On retry, the pipeline step to continue from (CLONE, FIX, VERIFY, SCAN, PUSH, PR, PLAN).
+     * On retry, the pipeline step to continue from (CLONE, FIX, VERIFY, SCAN, REMEDIATE, PUSH, PR, PLAN).
      * Null on a first run.
      */
     private String resumeFrom;
@@ -54,6 +54,35 @@ public class Job {
     private String cancelledBy;
     private String cancellationReason;
     private String securityScanSummary;
+    /** Resolve steps shown while {@code pendingApproval} is SECURITY. */
+    private String securityRemediationPlan;
+    /** CHANGE_PLAN or SECURITY while status is AWAITING_APPROVAL. */
+    private String pendingApproval;
+    /** How many times a human has approved a security remediation for this job. */
+    @Builder.Default
+    private int securityRemediationAttempts = 0;
+
+    /** Provider name shown on the job, such as Azure OpenAI or Claude. */
+    private String llmProvider;
+    @Builder.Default
+    private List<String> filesRead = new ArrayList<>();
+    @Builder.Default
+    private List<String> filesChanged = new ArrayList<>();
+    @Builder.Default
+    private List<String> commandsRun = new ArrayList<>();
+    /** Empty string means a test command ran. A non-empty value names services whose tests were not run. */
+    private String testsNotRun;
+    private String diffScopeSummary;
+    @Builder.Default
+    private List<String> diffScopeFiles = new ArrayList<>();
+    /** Exact service:path list a human approved before commit. */
+    private String approvedDiffScope;
+    private boolean stopRequested;
+    private Integer promptTokens;
+    private Integer completionTokens;
+    /** ACCEPTED or REJECTED, recorded by a person after they review the pull request. */
+    private String prDisposition;
+    private String prDispositionBy;
 
     private String l1Classification;
     private String l1DraftResponse;

@@ -19,6 +19,12 @@ function emptyForm(): ProjectInput {
     zohoCliqWebhookUrl: '',
     githubSshPrivateKey: '',
     githubPat: '',
+    clearGithubPat: false,
+    clearGithubSshKey: false,
+    githubAppId: '',
+    githubAppInstallationId: '',
+    githubAppPrivateKey: '',
+    clearGithubAppPrivateKey: false,
     zohoTeamId: '',
     zohoProjectIdExternal: '',
     zohoOAuthClientId: '',
@@ -43,6 +49,12 @@ function formFromProject(p: ProjectResponse): ProjectInput {
     zohoCliqWebhookUrl: '',
     githubSshPrivateKey: '',
     githubPat: '',
+    clearGithubPat: false,
+    clearGithubSshKey: false,
+    githubAppId: p.githubAppId ?? '',
+    githubAppInstallationId: p.githubAppInstallationId ?? '',
+    githubAppPrivateKey: '',
+    clearGithubAppPrivateKey: false,
     zohoTeamId: p.zohoTeamId ?? '',
     zohoProjectIdExternal: p.zohoProjectIdExternal ?? '',
     zohoOAuthClientId: '',
@@ -244,42 +256,81 @@ export function ProjectForm({
                 onChange={(e) => setForm({ ...form, zohoCliqWebhookUrl: e.target.value })}
             />
           </Field>
-          <Field label="GitHub SSH private key" hint={editingId ? 'Leave blank to keep the current value' : 'Used for git clone/push'}>
+          <Field label="GitHub App ID" hint="Preferred. CodeHealer mints a short-lived installation token for clone and pull requests.">
+            <input
+                className={inputCls}
+                value={form.githubAppId ?? ''}
+                onChange={(e) => setForm({ ...form, githubAppId: e.target.value })}
+            />
+          </Field>
+          <Field label="GitHub App installation ID">
+            <input
+                className={inputCls}
+                value={form.githubAppInstallationId ?? ''}
+                onChange={(e) => setForm({ ...form, githubAppInstallationId: e.target.value })}
+            />
+          </Field>
+          <Field label="GitHub App private key" hint={editingId ? 'Leave blank to keep the current key' : 'PEM from the GitHub App'}>
+            <textarea
+                className={`${inputCls} h-24 font-mono-brand`}
+                placeholder="-----BEGIN RSA PRIVATE KEY-----"
+                value={form.githubAppPrivateKey ?? ''}
+                onChange={(e) => setForm({ ...form, githubAppPrivateKey: e.target.value, clearGithubAppPrivateKey: false })}
+            />
+            {editingProject?.hasGithubApp && (
+                <label className="mt-2 flex items-center gap-2 text-xs text-[color:var(--color-text-400)]">
+                  <input
+                      type="checkbox"
+                      checked={!!form.clearGithubAppPrivateKey}
+                      onChange={(e) => setForm({ ...form, clearGithubAppPrivateKey: e.target.checked, githubAppPrivateKey: '' })}
+                  />
+                  Remove the stored App private key. This does not uninstall the App on GitHub.
+                </label>
+            )}
+          </Field>
+          <Field label="GitHub SSH private key" hint={editingId ? 'Leave blank to keep the current value' : 'Optional. Used for git clone and push.'}>
             <textarea
                 className={`${inputCls} h-24 font-mono-brand`}
                 placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
                 value={form.githubSshPrivateKey}
-                onChange={(e) => setForm({ ...form, githubSshPrivateKey: e.target.value })}
+                onChange={(e) => setForm({ ...form, githubSshPrivateKey: e.target.value, clearGithubSshKey: false })}
             />
-            <CredentialGuide
-                steps={[
-                  {
-                    text: 'Generate a dedicated keypair for CodeHealer (no passphrase - it runs unattended):',
-                    command: 'ssh-keygen -t ed25519 -C "codehealer-bot" -f ~/.ssh/codehealer_bot_ed25519 -N ""',
-                  },
-                  {
-                    text: 'Add the public key to GitHub → Settings → SSH and GPG keys → New SSH key (or as a repo Deploy Key with "Allow write access" if you have admin on the repo):',
-                    command: 'cat ~/.ssh/codehealer_bot_ed25519.pub',
-                  },
-                  {
-                    text: 'Copy the private key and paste it into the field above:',
-                    command: 'cat ~/.ssh/codehealer_bot_ed25519',
-                  },
-                ]}
-            />
+            {editingProject?.hasGithubSshKey && (
+                <label className="mt-2 flex items-center gap-2 text-xs text-[color:var(--color-text-400)]">
+                  <input
+                      type="checkbox"
+                      checked={!!form.clearGithubSshKey}
+                      onChange={(e) => setForm({ ...form, clearGithubSshKey: e.target.checked, githubSshPrivateKey: '' })}
+                  />
+                  Remove the stored SSH key. Delete the matching deploy key on GitHub as well.
+                </label>
+            )}
+            <p className="mt-2 text-xs text-[color:var(--color-text-600)]">
+              A classic personal access token or a write-capable SSH key can still merge on GitHub if branch protection allows it. CodeHealer never calls the merge API. Require a pull-request review on the default branch.
+            </p>
           </Field>
-          <Field label="GitHub personal access token" hint={editingId ? 'Leave blank to keep the current value' : 'Used to open the pull request via the GitHub API'}>
+          <Field label="GitHub personal access token" hint="Fallback when a GitHub App is not configured. Leave blank to keep the current value.">
             <input
                 className={inputCls}
                 type="password"
                 value={form.githubPat}
-                onChange={(e) => setForm({ ...form, githubPat: e.target.value })}
+                onChange={(e) => setForm({ ...form, githubPat: e.target.value, clearGithubPat: false })}
             />
+            {editingProject?.hasGithubPat && (
+                <label className="mt-2 flex items-center gap-2 text-xs text-[color:var(--color-text-400)]">
+                  <input
+                      type="checkbox"
+                      checked={!!form.clearGithubPat}
+                      onChange={(e) => setForm({ ...form, clearGithubPat: e.target.checked, githubPat: '' })}
+                  />
+                  Remove the stored token. This does not revoke it on GitHub.
+                </label>
+            )}
             <CredentialGuide
                 steps={[
-                  { text: 'Go to GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token.' },
-                  { text: 'Check the "repo" scope, set an expiration, then click Generate token.' },
-                  { text: 'Copy the token (shown once, starts with ghp_...) and paste it into the field above.' },
+                  { text: 'Prefer a GitHub App installed on the repositories CodeHealer should change. Grant contents and pull requests. CodeHealer exchanges that for a short-lived token.' },
+                  { text: 'If you use a personal access token instead, create a fine-grained token that can write contents and pull requests on those repositories, and set an expiration.' },
+                  { text: 'Enable branch protection on the default branch: require a review, and do not allow direct pushes. CodeHealer opens a pull request and does not merge it.' },
                 ]}
             />
           </Field>

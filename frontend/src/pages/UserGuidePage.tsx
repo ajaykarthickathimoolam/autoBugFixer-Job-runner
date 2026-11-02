@@ -25,7 +25,7 @@ export function UserGuidePage() {
         <div>
           <p className="eyebrow">Setup</p>
           <h1 className="page-title">User Guide</h1>
-          <p className="mt-1 text-sm text-[color:var(--color-text-400)]">One-time setup for the fixer (GPT or Claude), Zoho Sprints or Jira Cloud, and Zoho Cliq notifications</p>
+          <p className="mt-1 text-sm text-[color:var(--color-text-400)]">Setup for the fixer, ticket host, notifications, and the trust controls CodeHealer actually implements</p>
         </div>
 
         <SectionCard title="1. Fixer (GPT or Claude)">
@@ -118,6 +118,21 @@ export function UserGuidePage() {
               will post into the channel.
             </li>
           </ol>
+        </SectionCard>
+
+        <SectionCard title="5. Trust and security">
+          <p className="text-sm text-[color:var(--color-text-100)]">
+            CodeHealer turns a ticket into a pull request a person reviews. It does not merge, and it does not claim to be risk-free.
+          </p>
+          <ul className="flex list-disc flex-col gap-2 pl-5 text-sm text-[color:var(--color-text-400)]">
+            <li>GitHub access is a short-lived App installation token when an App is configured, or a stored personal access token or SSH key. Those secrets are encrypted at rest. Removing them here does not revoke them on GitHub.</li>
+            <li>The token is not written into the git remote URL and is not pasted into the model prompt. Git errors are redacted before they are stored or sent to Jira, Zoho, or Cliq.</li>
+            <li>The fixer reads the checkout. For GPT, secret files such as <code>.env</code> and private keys are refused, and secret-shaped text in tool results is redacted before it is sent back to Azure OpenAI. Claude Code runs in the same sandbox and can still read files the sandbox can see. CodeHealer does not set a no-training flag. Retention is the Azure or Anthropic contract on the account you configure.</li>
+            <li>Shell commands, builds, tests, and <code>npm audit fix</code> run in a bubblewrap sandbox for that command. The sandbox does not receive the GitHub token, API keys, or the internal shared secret, and it does not mount other jobs&apos; directories. It still has outbound network so builds can download dependencies. Cancel and the job timeout kill the process group. The job page says Stopping until that process has exited.</li>
+            <li>A pull request opens only after the change plan is approved, configured build and test commands exit 0, and blocking secret or high/critical dependency findings are cleared. Medium SAST matches are recorded and do not block the pull request. If no test command is configured, the job says tests were not run. A change set that is large or touches workflows or credential files waits for approval of that exact file list.</li>
+            <li>GitHub is the only repository host. The runner needs clone and pull-request access. Require branch protection on the default branch, because a classic token or write-capable SSH key could still merge if GitHub allows it.</li>
+            <li>The job page shows the provider, files read, files changed, commands, test state, and token counts when the fixer reports them. Token counts are usage, not hours saved. Mark a pull request accepted or rejected after a person reviews it.</li>
+          </ul>
         </SectionCard>
       </div>
   );

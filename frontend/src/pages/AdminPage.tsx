@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api, ApiError } from '../lib/api';
 import { UserManagementPanel } from '../components/UserManagementPanel';
 import { ProjectForm } from '../components/ProjectForm';
@@ -300,6 +301,10 @@ function SettingsPanel() {
           <input type="checkbox" checked={securityScansEnabled} onChange={(e) => setSecurityScansEnabled(e.target.checked)} />
           Run SAST / secret / dependency scans before opening a PR
         </label>
+        <p className="text-xs text-[color:var(--color-text-600)]">
+          High and critical secrets and npm audit findings block the pull request. Medium SAST findings are shown and do not block it. This is not a security certification.{' '}
+          <Link to="/guide" className="text-[color:var(--color-accent-teal)] hover:underline">Trust and security</Link>
+        </p>
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={failClosedEnabled} onChange={(e) => setFailClosedEnabled(e.target.checked)} />
           Fail closed when Guard cannot evaluate policy
@@ -505,10 +510,11 @@ export function AdminPage() {
               <button
                   key={key}
                   onClick={() => setTab(key)}
-                  className={`rounded-xl px-3.5 py-2 text-sm font-medium transition-colors ${
+                  aria-current={tab === key ? 'page' : undefined}
+                  className={`rounded-xl px-3.5 py-2 text-sm transition-colors ${
                       tab === key
-                          ? 'bg-[color:var(--color-accent-primary)]/16 text-[color:var(--color-text-100)] shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-accent-primary)_40%,transparent)]'
-                          : 'text-[color:var(--color-text-400)] wash-hover hover:text-[color:var(--color-text-100)]'
+                          ? 'bg-[color:var(--color-accent-primary)] font-semibold text-[color:var(--color-on-accent)] shadow-[0_8px_18px_-12px_color-mix(in_srgb,var(--color-accent-primary)_80%,transparent)]'
+                          : 'font-medium text-[color:var(--color-text-400)] wash-hover hover:text-[color:var(--color-text-100)]'
                   }`}
               >
                 {label}

@@ -24,6 +24,10 @@ public class Project {
     private String zohoCliqWebhookUrlEncrypted;
     private String githubSshPrivateKeyEncrypted;
     private String githubPatEncrypted;
+    /** GitHub App id. Not a secret. Preferred over a long-lived personal access token. */
+    private String githubAppId;
+    private String githubAppInstallationId;
+    private String githubAppPrivateKeyEncrypted;
     @Builder.Default
     private List<ServiceConfig> services = new ArrayList<>();
 

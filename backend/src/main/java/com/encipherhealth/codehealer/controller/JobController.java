@@ -200,6 +200,13 @@ public class JobController {
         return withJob(id, job -> missionControlService.reject(id, reason));
     }
 
+    @PostMapping("/{id}/disposition")
+    public JobResponse disposition(@PathVariable String id, @RequestBody(required = false) Map<String, String> body) {
+        authorize(id);
+        String disposition = body == null ? null : body.get("disposition");
+        return withJob(id, job -> missionControlService.recordDisposition(id, disposition));
+    }
+
     @GetMapping("/{id}/trace")
     public Object trace(@PathVariable String id) {
         authorize(id);

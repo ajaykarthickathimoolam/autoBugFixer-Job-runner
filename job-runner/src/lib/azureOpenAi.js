@@ -82,5 +82,6 @@ export async function azureChat({ endpoint, apiKey, apiVersion, deployment, mess
     toolCalls: Array.isArray(message.tool_calls) ? message.tool_calls : [],
     finishReason: choice.finish_reason || '',
     rawMessage: message,
+    usage: json.usage || {},
   };
 }

@@ -47,9 +47,14 @@ public class JobRunnerClient {
     }
 
     public void abortTask(String jobId) {
+        abortTask(jobId, "CANCEL");
+    }
+
+    public void abortTask(String jobId, String reason) {
         webClient.post()
                 .uri("/tasks/{jobId}/abort", jobId)
                 .header("X-Internal-Secret", sharedSecret)
+                .bodyValue(java.util.Map.of("reason", reason == null ? "CANCEL" : reason))
                 .retrieve()
                 .toBodilessEntity()
                 .block(Duration.ofSeconds(10));

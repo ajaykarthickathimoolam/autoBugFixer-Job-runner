@@ -34,10 +34,23 @@ public record JobResponse(
         String cancelledBy,
         String cancellationReason,
         String securityScanSummary,
+        String securityRemediationPlan,
+        String pendingApproval,
         String l1Classification,
         String l1DraftResponse,
         List<SageCitation> l1Citations,
         String l1EscalationReason,
-        String resumeFrom
+        String resumeFrom,
+        String llmProvider,
+        List<String> filesRead,
+        List<String> filesChanged,
+        List<String> commandsRun,
+        String testsNotRun,
+        String diffScopeSummary,
+        boolean stopRequested,
+        Integer promptTokens,
+        Integer completionTokens,
+        String prDisposition,
+        String prDispositionBy
 ) {
 }

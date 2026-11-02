@@ -14,6 +14,7 @@ import com.encipherhealth.codehealer.repository.ProjectRepository;
 import com.encipherhealth.codehealer.security.PageAccessService;
 import com.encipherhealth.codehealer.security.ProjectAccessService;
 import com.encipherhealth.codehealer.service.EncryptionService;
+import com.encipherhealth.codehealer.service.GithubAppTokenService;
 import com.encipherhealth.codehealer.service.JobRunnerClient;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -37,6 +38,7 @@ public class ProjectController {
     private final ProjectRepository projectRepository;
     private final EncryptionService encryptionService;
     private final JobRunnerClient jobRunnerClient;
+    private final GithubAppTokenService githubAppTokenService;
     private final ExecutorService executor;
     private final PageAccessService pageAccessService;
     private final ProjectAccessService projectAccessService;
@@ -68,6 +70,9 @@ public class ProjectController {
                 .zohoCliqWebhookUrlEncrypted(encryptionService.encrypt(blankToNull(request.getZohoCliqWebhookUrl())))
                 .githubSshPrivateKeyEncrypted(encryptionService.encrypt(blankToNull(request.getGithubSshPrivateKey())))
                 .githubPatEncrypted(encryptionService.encrypt(blankToNull(request.getGithubPat())))
+                .githubAppId(blankToNull(request.getGithubAppId()))
+                .githubAppInstallationId(blankToNull(request.getGithubAppInstallationId()))
+                .githubAppPrivateKeyEncrypted(encryptionService.encrypt(blankToNull(request.getGithubAppPrivateKey())))
                 .services(toServiceConfigs(request.getServices()))
                 .zohoTeamId(request.getZohoTeamId())
                 .zohoProjectIdExternal(request.getZohoProjectIdExternal())
@@ -100,11 +105,22 @@ public class ProjectController {
         if (request.getZohoCliqWebhookUrl() != null && !request.getZohoCliqWebhookUrl().isBlank()) {
             project.setZohoCliqWebhookUrlEncrypted(encryptionService.encrypt(request.getZohoCliqWebhookUrl()));
         }
-        if (request.getGithubSshPrivateKey() != null && !request.getGithubSshPrivateKey().isBlank()) {
+        if (Boolean.TRUE.equals(request.getClearGithubSshKey())) {
+            project.setGithubSshPrivateKeyEncrypted(null);
+        } else if (request.getGithubSshPrivateKey() != null && !request.getGithubSshPrivateKey().isBlank()) {
             project.setGithubSshPrivateKeyEncrypted(encryptionService.encrypt(request.getGithubSshPrivateKey()));
         }
-        if (request.getGithubPat() != null && !request.getGithubPat().isBlank()) {
+        if (Boolean.TRUE.equals(request.getClearGithubPat())) {
+            project.setGithubPatEncrypted(null);
+        } else if (request.getGithubPat() != null && !request.getGithubPat().isBlank()) {
             project.setGithubPatEncrypted(encryptionService.encrypt(request.getGithubPat()));
+        }
+        project.setGithubAppId(blankToNull(request.getGithubAppId()));
+        project.setGithubAppInstallationId(blankToNull(request.getGithubAppInstallationId()));
+        if (Boolean.TRUE.equals(request.getClearGithubAppPrivateKey())) {
+            project.setGithubAppPrivateKeyEncrypted(null);
+        } else if (request.getGithubAppPrivateKey() != null && !request.getGithubAppPrivateKey().isBlank()) {
+            project.setGithubAppPrivateKeyEncrypted(encryptionService.encrypt(request.getGithubAppPrivateKey()));
         }
         project.setServices(toServiceConfigs(request.getServices()));
         project.setZohoTeamId(request.getZohoTeamId());
@@ -239,6 +255,11 @@ public class ProjectController {
                 project.getJiraApiTokenEncrypted() != null,
                 project.getJiraIssueTypes(),
                 project.getJiraWebhookSecretEncrypted() != null,
+                project.getGithubAppPrivateKeyEncrypted() != null
+                        && project.getGithubAppId() != null
+                        && project.getGithubAppInstallationId() != null,
+                project.getGithubAppId(),
+                project.getGithubAppInstallationId(),
                 project.getLastPolledAt(),
                 services,
                 project.getCreatedAt(),
@@ -279,18 +300,24 @@ public class ProjectController {
             return;
         }
         String sshKey = encryptionService.decrypt(project.getGithubSshPrivateKeyEncrypted());
-        if (sshKey == null || sshKey.isBlank()) {
-            // No key configured yet - nothing job-runner could clone with; the first real task
-            // will still work later once a key is set (ensureBaseClone runs lazily there too).
+        String token = null;
+        try {
+            token = githubAppTokenService.accessToken(project);
+        } catch (Exception e) {
+            log.warn("Could not mint a GitHub token while preparing project {}: {}", project.getId(), e.getMessage());
+        }
+        if ((sshKey == null || sshKey.isBlank()) && (token == null || token.isBlank())) {
             return;
         }
         List<TaskServiceInfo> services = project.getServices().stream()
                 .map(s -> new TaskServiceInfo(s.getId(), s.getName(), s.getRepoUrl(), s.getBaseBranch(),
                         s.getArchitectureMd(), s.getBuildCommand(), s.getTestCommand()))
                 .toList();
+        String pat = token;
+        String key = sshKey;
         executor.submit(() -> {
             try {
-                jobRunnerClient.prepareProject(new PrepareProjectRequest(project.getId(), services, sshKey));
+                jobRunnerClient.prepareProject(new PrepareProjectRequest(project.getId(), services, key, pat));
             } catch (Exception e) {
                 log.warn("Failed to trigger base-clone warm-up for project {}: {}", project.getId(), e.getMessage());
             }

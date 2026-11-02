@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     build-essential \
+    bubblewrap \
     && rm -rf /var/lib/apt/lists/*
 
 ARG MAVEN_VERSION=3.9.11

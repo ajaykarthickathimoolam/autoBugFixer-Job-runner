@@ -19,6 +19,15 @@ public class ProjectRequest {
     private String githubSshPrivateKey;
     /** Plaintext GitHub Personal Access Token. Omit/blank on update to keep the existing stored value. */
     private String githubPat;
+    /** When true on update, deletes the stored personal access token. Does not revoke it on GitHub. */
+    private Boolean clearGithubPat;
+    /** When true on update, deletes the stored SSH private key. Does not remove it from GitHub. */
+    private Boolean clearGithubSshKey;
+    private String githubAppId;
+    private String githubAppInstallationId;
+    /** Plaintext GitHub App private key. Omit/blank on update to keep the existing stored value. */
+    private String githubAppPrivateKey;
+    private Boolean clearGithubAppPrivateKey;
 
     private String zohoTeamId;
     private String zohoProjectIdExternal;

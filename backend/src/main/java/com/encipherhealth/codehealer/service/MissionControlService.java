@@ -30,6 +30,9 @@ public class MissionControlService {
             JobStatus.VERIFYING, JobStatus.SCANNING, JobStatus.AWAITING_INPUT, JobStatus.AWAITING_APPROVAL,
             JobStatus.PAUSED
     );
+    private static final Set<JobStatus> RUNNER_ACTIVE = Set.of(
+            JobStatus.ANALYZING, JobStatus.CLONING, JobStatus.FIXING, JobStatus.VERIFYING, JobStatus.SCANNING
+    );
 
     private final JobRepository jobRepository;
     private final ProjectRepository projectRepository;
@@ -102,10 +105,19 @@ public class MissionControlService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Job cannot be cancelled from " + job.getStatus());
         }
         String actor = currentUser();
-        job.transitionTo(JobStatus.CANCELLED);
         job.setCancelledBy(actor);
         job.setCancellationReason(reason);
+        job.setStopRequested(true);
         job.setUpdatedAt(Instant.now());
+        if (RUNNER_ACTIVE.contains(job.getStatus())) {
+            job = jobRepository.save(job);
+            sseBroadcastService.broadcastJobUpdate(job);
+            abortRunnerQuietly(jobId);
+            traceService.record(job.getId(), job.getProjectId(), "APPROVAL", actor, "CANCEL", reason);
+            return job;
+        }
+        job.setStopRequested(false);
+        job.transitionTo(JobStatus.CANCELLED);
         job = jobRepository.save(job);
         jobCompletionRegistry.complete(jobId);
         abortRunnerQuietly(jobId);
@@ -120,13 +132,44 @@ public class MissionControlService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Job is not awaiting approval");
         }
         String actor = currentUser();
+        boolean securityApproval = "SECURITY".equals(job.getPendingApproval());
+        boolean diffApproval = "DIFF_SCOPE".equals(job.getPendingApproval());
         GuardDecision decision = guardService.authorize(job,
                 job.getMissionType() == MissionType.L1_SUPPORT ? "L1_RESPOND" : "FIX", actor);
         if (!decision.allowed()) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, decision.reason());
         }
+        if (securityApproval) {
+            job.setResumeFrom("REMEDIATE");
+            job.setPendingApproval(null);
+            job.setSecurityRemediationAttempts(job.getSecurityRemediationAttempts() + 1);
+            job.setUpdatedAt(Instant.now());
+            traceService.record(job.getId(), job.getProjectId(), "APPROVAL", actor, "APPROVE",
+                    "security remediation");
+            job.transitionTo(JobStatus.RECEIVED);
+            job = jobRepository.save(job);
+            sseBroadcastService.broadcastJobUpdate(job);
+            jobCompletionRegistry.complete(jobId);
+            dispatch(job);
+            return job;
+        }
+        if (diffApproval) {
+            java.util.List<String> files = job.getDiffScopeFiles() == null ? java.util.List.of() : job.getDiffScopeFiles();
+            job.setApprovedDiffScope(String.join("\n", files));
+            job.setResumeFrom("PUSH");
+            job.setPendingApproval(null);
+            job.setUpdatedAt(Instant.now());
+            traceService.record(job.getId(), job.getProjectId(), "APPROVAL", actor, "APPROVE", "diff scope");
+            job.transitionTo(JobStatus.RECEIVED);
+            job = jobRepository.save(job);
+            sseBroadcastService.broadcastJobUpdate(job);
+            jobCompletionRegistry.complete(jobId);
+            dispatch(job);
+            return job;
+        }
         job.setApprovedBy(actor);
         job.setApprovedAt(Instant.now());
+        job.setPendingApproval(null);
         job.setUpdatedAt(Instant.now());
         traceService.record(job.getId(), job.getProjectId(), "APPROVAL", actor, "APPROVE",
                 job.getMissionType() == MissionType.L1_SUPPORT ? "L1 draft" : "change plan");
@@ -149,6 +192,19 @@ public class MissionControlService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "Job is not awaiting approval");
         }
         String actor = currentUser();
+        if ("SECURITY".equals(job.getPendingApproval()) || "DIFF_SCOPE".equals(job.getPendingApproval())) {
+            boolean diff = "DIFF_SCOPE".equals(job.getPendingApproval());
+            job.setPendingApproval(null);
+            job.transitionTo(JobStatus.FAILED);
+            String detail = reason == null || reason.isBlank() ? "" : ": " + reason.strip();
+            job.setFailureReason((diff ? "Diff scope rejected by " : "Security remediation rejected by ") + actor + detail);
+            job.setUpdatedAt(Instant.now());
+            job = jobRepository.save(job);
+            jobCompletionRegistry.complete(jobId);
+            sseBroadcastService.broadcastJobUpdate(job);
+            traceService.record(job.getId(), job.getProjectId(), "APPROVAL", actor, "REJECT", job.getFailureReason());
+            return job;
+        }
         if (job.getMissionType() == MissionType.L1_SUPPORT) {
             GuardDecision decision = guardService.authorize(job, "L1_ESCALATE", actor);
             if (!decision.allowed()) {
@@ -162,6 +218,7 @@ public class MissionControlService {
             traceService.record(job.getId(), job.getProjectId(), "APPROVAL", actor, "REJECT", job.getL1EscalationReason());
             return job;
         }
+        job.setPendingApproval(null);
         job.transitionTo(JobStatus.FAILED);
         job.setFailureReason(reason == null || reason.isBlank() ? "Change plan rejected by " + actor : reason);
         job.setUpdatedAt(Instant.now());
@@ -169,6 +226,23 @@ public class MissionControlService {
         jobCompletionRegistry.complete(jobId);
         sseBroadcastService.broadcastJobUpdate(job);
         traceService.record(job.getId(), job.getProjectId(), "APPROVAL", actor, "REJECT", job.getFailureReason());
+        return job;
+    }
+
+    public Job recordDisposition(String jobId, String disposition) {
+        Job job = requireJob(jobId);
+        if (job.getPrUrl() == null || job.getPrUrl().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "This job has no pull request to record");
+        }
+        if (!"ACCEPTED".equals(disposition) && !"REJECTED".equals(disposition)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "disposition must be ACCEPTED or REJECTED");
+        }
+        job.setPrDisposition(disposition);
+        job.setPrDispositionBy(currentUser());
+        job.setUpdatedAt(Instant.now());
+        job = jobRepository.save(job);
+        sseBroadcastService.broadcastJobUpdate(job);
+        traceService.record(job.getId(), job.getProjectId(), "APPROVAL", job.getPrDispositionBy(), "PR_" + disposition, job.getPrUrl());
         return job;
     }
 

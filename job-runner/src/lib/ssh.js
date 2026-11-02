@@ -24,10 +24,14 @@ export async function cleanupKey(keyPath) {
 /**
  * GitHub's host key is pinned into /etc/ssh/ssh_known_hosts at image build time (see Dockerfile),
  * so this deliberately does NOT disable host key checking.
+ * The environment is a minimal copy so the SSH child does not inherit API keys or the internal secret.
  */
 export function gitEnvForKey(keyPath) {
   return {
-    ...process.env,
+    PATH: process.env.PATH,
+    HOME: process.env.HOME,
+    LANG: process.env.LANG || 'C.UTF-8',
+    GIT_TERMINAL_PROMPT: '0',
     GIT_SSH_COMMAND: `ssh -i ${keyPath} -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes`,
   };
 }

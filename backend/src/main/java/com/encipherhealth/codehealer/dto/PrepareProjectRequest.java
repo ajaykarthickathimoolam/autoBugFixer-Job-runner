@@ -6,6 +6,7 @@ import java.util.List;
 public record PrepareProjectRequest(
         String projectId,
         List<TaskServiceInfo> services,
-        String githubSshPrivateKey
+        String githubSshPrivateKey,
+        String githubPat
 ) {
 }

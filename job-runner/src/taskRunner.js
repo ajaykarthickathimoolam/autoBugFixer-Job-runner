@@ -1,5 +1,5 @@
 import fs from 'fs/promises';
-import { reportStatus, reportLog, checkGuard, lookupIdempotency, rememberIdempotency } from './lib/callback.js';
+import { reportStatus, reportLog, reportEvent, checkGuard, lookupIdempotency, rememberIdempotency } from './lib/callback.js';
 import { createGitAuth } from './lib/gitAuth.js';
 import * as git from './lib/git.js';
 import { runClaudeCli } from './lib/claudeCli.js';
@@ -7,13 +7,17 @@ import { runGptFixer } from './lib/gptFixer.js';
 import { createPullRequest } from './lib/github.js';
 import { runShell } from './lib/exec.js';
 import { basePathFor, taskRootFor, serviceDirFor, sanitizeBranchSegment } from './lib/workspace.js';
-import { buildFixPrompt, buildPlanPrompt, extractChangePlan, ticketTooVague, vagueTicketQuestion } from './lib/prompt.js';
-import { runSecurityScans } from './lib/securityScan.js';
-import { isToolchainFailure } from './lib/verify.js';
-import { clearAbort, throwIfAborted, TaskAbortedError } from './lib/abort.js';
+import { buildFixPrompt, buildPlanPrompt, buildSecurityRemediationPrompt, extractChangePlan, ticketTooVague, vagueTicketQuestion } from './lib/prompt.js';
+import { buildSecurityRemediationPlan, planAllowsNpmAuditFix, planNeedsFixer, runSecurityScans } from './lib/securityScan.js';
+import { abortHaltStatus, clearAbort, isAborted, throwIfAborted, TaskAbortedError } from './lib/abort.js';
+import { activitySnapshot, jobContext, newActivity, noteFileChanged, noteProvider, setTestsNotRun } from './lib/jobContext.js';
+import { redactSecrets } from './lib/redact.js';
+import { describeSandbox } from './lib/sandbox.js';
+import { needsApproval, sameScope, scopeSummary } from './lib/scope.js';
 import { logger } from './lib/logger.js';
 
 const LOG_TRUNCATE_LENGTH = 4000;
+const MAX_SECURITY_REMEDIATIONS = 2;
 const STEP_ORDER = ['CLONE', 'FIX', 'VERIFY', 'SCAN', 'PUSH', 'PR'];
 
 const RESUME_LABELS = {
@@ -21,16 +25,21 @@ const RESUME_LABELS = {
   FIX: 'the fix',
   VERIFY: 'build and tests',
   SCAN: 'security scans',
+  REMEDIATE: 'the approved security fix',
   PUSH: 'the push',
   PR: 'the pull request',
 };
 
 function normalizeResume(value) {
   const step = String(value || 'CLONE').toUpperCase();
+  if (step === 'REMEDIATE') return 'REMEDIATE';
   return STEP_ORDER.includes(step) ? step : 'CLONE';
 }
 
 function stepReached(resume, step) {
+  if (resume === 'REMEDIATE') {
+    return step === 'VERIFY' || step === 'SCAN' || step === 'PUSH' || step === 'PR';
+  }
   return STEP_ORDER.indexOf(resume) <= STEP_ORDER.indexOf(step);
 }
 
@@ -57,6 +66,7 @@ async function requireGuard(jobId, action) {
 
 async function runFixer(task, taskRoot, prompt, jobId) {
   const provider = (task.llmProvider || 'GPT').toUpperCase();
+  noteProvider(provider === 'GPT' ? 'Azure OpenAI' : 'Claude');
   await reportLog(jobId, `Invoking ${provider === 'GPT' ? 'GPT (Azure OpenAI)' : 'Claude Code'}...`);
   try {
     if (provider === 'GPT') {
@@ -92,6 +102,20 @@ async function runFixer(task, taskRoot, prompt, jobId) {
  * EXECUTE phase applies the approved plan, fails on test/scan errors, then opens PRs.
  */
 export async function runTask(task) {
+  if (isAborted(task.jobId)) {
+    const status = abortHaltStatus(task.jobId);
+    await reportStatus(task.jobId, status, {
+      message: status === 'FAILED'
+          ? 'Job timed out before the worker started'
+          : 'Job was cancelled before the worker started',
+    });
+    clearAbort(task.jobId);
+    return;
+  }
+  return jobContext.run({ jobId: task.jobId, activity: newActivity() }, () => runTaskBody(task));
+}
+
+async function runTaskBody(task) {
   const jobId = task.jobId;
   const branchName = `feature/${sanitizeBranchSegment(task.ticketId)}`;
   const taskRoot = taskRootFor(task.projectId, jobId);
@@ -100,12 +124,11 @@ export async function runTask(task) {
   let gitAuth;
   let awaitingInput = false;
   let awaitingApproval = false;
-  let failed = false;
   const phase = (task.phase || 'EXECUTE').toUpperCase();
   let resume = phase === 'PLAN' ? 'CLONE' : normalizeResume(task.resumeFrom);
-  clearAbort(jobId);
 
   try {
+    await reportLog(jobId, await describeSandbox());
     const clarificationLevel = (task.clarificationLevel || 'MEDIUM').toUpperCase();
     const skipAsk = clarificationLevel === 'NONE';
     const alreadyApproved = !!(task.approvedChangePlan && String(task.approvedChangePlan).trim());
@@ -141,7 +164,7 @@ export async function runTask(task) {
           await reportLog(jobId, 'The checkout from the failed run is gone, so the fix will be applied again.');
           resume = 'FIX';
         }
-      } else if ((resume === 'VERIFY' || resume === 'SCAN') && !(await workspaceReady(task, taskRoot))) {
+      } else if ((resume === 'VERIFY' || resume === 'SCAN' || resume === 'REMEDIATE') && !(await workspaceReady(task, taskRoot))) {
         await reportLog(jobId, 'The checkout from the failed run is gone, so the fix will be applied again.');
         resume = 'FIX';
       }
@@ -207,6 +230,9 @@ export async function runTask(task) {
         for (const entry of serviceDirs) {
           if (await git.hasChanges(entry.dir)) {
             changed.push(entry);
+            for (const file of await git.changedFiles(entry.dir)) {
+              noteFileChanged(`${entry.service.name}:${file}`);
+            }
           }
         }
         if (changed.length === 0) {
@@ -225,44 +251,49 @@ export async function runTask(task) {
         }
       }
 
+      if (resume === 'REMEDIATE') {
+        await applySecurityRemediation(task, taskRoot, changed, jobId);
+      }
+
       const testsMustPass = task.testsMustPass !== false;
-      const verifyNotes = [];
+      if (stepReached(resume, 'VERIFY') && changed.length) {
+        const missingTests = changed
+            .filter((entry) => !String(entry.service.testCommand || '').trim())
+            .map((entry) => entry.service.name);
+        setTestsNotRun(missingTests.join(', '));
+        if (missingTests.length) {
+          await reportLog(
+              jobId,
+              `No test command is configured for: ${missingTests.join(', ')}. Tests were not run for those services.`
+          );
+        }
+      }
       if (stepReached(resume, 'VERIFY') && changed.some((c) => c.service.buildCommand || c.service.testCommand)) {
         await requireGuard(jobId, 'VERIFY');
         await reportStatus(jobId, 'VERIFYING');
         for (const { service, dir } of changed) {
           throwIfAborted(jobId);
           if (service.buildCommand) {
-            const buildResult = await runShell(service.buildCommand, { cwd: dir });
+            const buildResult = await runShell(service.buildCommand, { cwd: dir, timeoutMs: 15 * 60 * 1000 });
             const output = `${buildResult.stdout}${buildResult.stderr}`;
-            const toolchain = buildResult.code !== 0 && isToolchainFailure(output);
             await reportLog(
                 jobId,
                 `[${service.name}] Build command exited ${buildResult.code}\n${truncate(output)}`,
-                buildResult.code === 0 ? 'INFO' : toolchain ? 'WARN' : 'ERROR'
+                buildResult.code === 0 ? 'INFO' : 'ERROR'
             );
-            if (toolchain) {
-              const note = `[${service.name}] Build skipped as a runner toolchain issue (not a regression of this change).`;
-              verifyNotes.push(note);
-              await reportLog(jobId, note, 'WARN');
-            } else if (testsMustPass && buildResult.code !== 0) {
+            if (testsMustPass && buildResult.code !== 0) {
               throw new Error(`[${service.name}] Build failed (exit ${buildResult.code})`);
             }
           }
           if (service.testCommand) {
-            const testResult = await runShell(service.testCommand, { cwd: dir });
+            const testResult = await runShell(service.testCommand, { cwd: dir, timeoutMs: 15 * 60 * 1000 });
             const output = `${testResult.stdout}${testResult.stderr}`;
-            const toolchain = testResult.code !== 0 && isToolchainFailure(output);
             await reportLog(
                 jobId,
                 `[${service.name}] Test command exited ${testResult.code}\n${truncate(output)}`,
-                testResult.code === 0 ? 'INFO' : toolchain ? 'WARN' : 'ERROR'
+                testResult.code === 0 ? 'INFO' : 'ERROR'
             );
-            if (toolchain) {
-              const note = `[${service.name}] Tests skipped as a runner toolchain issue (not a regression of this change).`;
-              verifyNotes.push(note);
-              await reportLog(jobId, note, 'WARN');
-            } else if (testsMustPass && testResult.code !== 0) {
+            if (testsMustPass && testResult.code !== 0) {
               throw new Error(`[${service.name}] Tests failed (exit ${testResult.code})`);
             }
           }
@@ -272,14 +303,31 @@ export async function runTask(task) {
       if (stepReached(resume, 'SCAN') && task.securityScansEnabled !== false) {
         await requireGuard(jobId, 'SCAN');
         await reportStatus(jobId, 'SCANNING');
+        const failedScans = [];
         for (const { service, dir } of changed) {
           throwIfAborted(jobId);
           const scan = await runSecurityScans(dir, service.name);
           scanSummaries.push(scan.summary);
           await reportLog(jobId, scan.summary, scan.ok ? 'INFO' : 'ERROR');
           if (!scan.ok) {
-            throw new Error(`[${service.name}] Security scan failed:\n${scan.summary}`);
+            failedScans.push({ serviceName: service.name, findings: scan.findings });
           }
+        }
+        if (failedScans.length) {
+          const summary = scanSummaries.join('\n\n');
+          const attempts = Number(task.securityRemediationAttempts || 0);
+          if (attempts >= MAX_SECURITY_REMEDIATIONS) {
+            throw new Error(`Security scan failed after ${MAX_SECURITY_REMEDIATIONS} approved remediation attempts:\n${summary}`);
+          }
+          const remediationPlan = buildSecurityRemediationPlan(failedScans);
+          awaitingApproval = true;
+          await reportLog(jobId, 'Security findings need approval before they are fixed.');
+          await reportStatus(jobId, 'AWAITING_APPROVAL', {
+            message: remediationPlan,
+            securityRemediationPlan: remediationPlan,
+            securityScanSummary: summary,
+          });
+          return;
         }
       }
 
@@ -287,24 +335,47 @@ export async function runTask(task) {
       const scanText = scanSummaries.length ? scanSummaries.join('\n\n') : savedScan;
       const scanBody = scanText ? `\n\n## Security scans\n${scanText}` : '';
       const planBody = task.approvedChangePlan ? `\n\n## Approved change plan\n${task.approvedChangePlan}` : '';
-      const verifyBody = verifyNotes.length
-          ? `\n\n## Verification notes\n${verifyNotes.join('\n')}`
+      const remediationBody = Number(task.securityRemediationAttempts || 0) > 0 && task.securityRemediationPlan
+          ? `\n\n## Approved security remediation\n${task.securityRemediationPlan}`
           : '';
-      const prBody = `Automated fix by CodeHealer for ticket ${task.ticketId}. Does not merge.\n\n${task.ticketDescription || ''}${planBody}${scanBody}${verifyBody}`;
+      const prBody = `Automated fix by CodeHealer for ticket ${task.ticketId}. Does not merge.\n\n${task.ticketDescription || ''}${planBody}${remediationBody}${scanBody}`;
 
       const publish = resume === 'PR' ? await servicesOnRemote(task, branchName, gitAuth, gitEnv) : changed;
       if (publish.length === 0) {
         throw new Error(`No feature branch named ${branchName} is on GitHub to open a pull request from`);
       }
 
+      if (resume !== 'PR') {
+        const blocked = [];
+        for (const { service, dir } of publish) {
+          const files = await git.changedFiles(dir);
+          const labelled = files.map((file) => `${service.name}:${file}`);
+          if (files.length && needsApproval(files) && !sameScope(labelled, task.approvedDiffScope)) {
+            blocked.push({ service, files, labelled });
+          }
+        }
+        if (blocked.length) {
+          const summary = blocked.map((entry) => scopeSummary(entry.service.name, entry.files)).join('\n\n');
+          const diffScopeFiles = blocked.flatMap((entry) => entry.labelled);
+          awaitingApproval = true;
+          await reportLog(jobId, 'Change set needs approval before it is committed.');
+          await reportStatus(jobId, 'AWAITING_APPROVAL', {
+            message: summary,
+            diffScopeSummary: summary,
+            diffScopeFiles,
+          });
+          return;
+        }
+      }
+
+      await requireGuard(jobId, 'CREATE_PR');
       for (const { service, dir } of publish) {
         throwIfAborted(jobId);
         if (resume !== 'PR') {
           await git.commitIfChanges(dir, `Fix ${task.ticketId}: ${task.ticketTitle || 'automated fix'}`);
+          throwIfAborted(jobId);
           await git.pushBranch(dir, branchName, gitAuth.resolveUrl(service.repoUrl), gitEnv);
         }
-
-        await requireGuard(jobId, 'CREATE_PR');
         const idemKey = `pr:${jobId}:${service.serviceId || service.name}`;
         const existing = await lookupIdempotency(idemKey);
         let prUrl = existing;
@@ -330,17 +401,21 @@ export async function runTask(task) {
         securityScanSummary: scanText,
       });
   } catch (err) {
-    failed = true;
-    logger.error(`Task ${jobId} failed: ${err.stack || err.message}`);
-    if (err instanceof TaskAbortedError) {
-      await reportStatus(jobId, 'CANCELLED', { message: err.message });
+    logger.error(`Task ${jobId} failed: ${redactSecrets(err.stack || err.message)}`);
+    if (err instanceof TaskAbortedError || isAborted(jobId)) {
+      const status = abortHaltStatus(jobId);
+      const message = status === 'FAILED'
+          ? 'Job timed out and the worker was stopped'
+          : 'Job was cancelled and the worker was stopped';
+      await reportStatus(jobId, status, { message });
     } else if (err instanceof GuardDeniedError) {
       await reportStatus(jobId, err.haltStatus || 'FAILED', { message: err.message });
     } else {
       await reportStatus(jobId, 'FAILED', { message: err.message });
     }
   } finally {
-    if (!awaitingInput && !awaitingApproval && !failed) {
+    await reportEvent(jobId, activitySnapshot());
+    if (!awaitingInput && !awaitingApproval) {
       await fs.rm(taskRoot, { recursive: true, force: true }).catch(() => {});
     }
     if (gitAuth) {
@@ -348,6 +423,52 @@ export async function runTask(task) {
     }
     clearAbort(jobId);
   }
+}
+
+async function applySecurityRemediation(task, taskRoot, targets, jobId) {
+  const plan = String(task.securityRemediationPlan || '').trim();
+  if (!plan || targets.length === 0) {
+    throw new Error('Security remediation made no changes');
+  }
+  await requireGuard(jobId, 'FIX');
+  await reportStatus(jobId, 'FIXING');
+  await reportLog(jobId, 'Applying the approved security remediation.');
+
+  const before = new Map();
+  for (const entry of targets) {
+    before.set(entry.dir, await git.worktreeFingerprint(entry.dir));
+  }
+
+  for (const entry of targets) {
+    throwIfAborted(jobId);
+    if (!planAllowsNpmAuditFix(plan, entry.service.name)) continue;
+    const audit = await runShell('npm audit fix --omit=dev', { cwd: entry.dir, timeoutMs: 10 * 60 * 1000 });
+    const output = `${audit.stdout || ''}${audit.stderr || ''}`;
+    await reportLog(
+        jobId,
+        `[${entry.service.name}] npm audit fix exited ${audit.code}\n${truncate(output)}`,
+        audit.code === 0 ? 'INFO' : 'WARN'
+    );
+  }
+
+  if (planNeedsFixer(plan)) {
+    throwIfAborted(jobId);
+    const prompt = buildSecurityRemediationPrompt(task, targets);
+    const output = await runFixer(task, taskRoot, prompt, jobId);
+    if (/^NEEDS_INPUT:/mi.test(output || '')) {
+      throw new Error('Security remediation made no changes');
+    }
+  }
+
+  let changed = false;
+  for (const entry of targets) {
+    const after = await git.worktreeFingerprint(entry.dir);
+    if (after !== before.get(entry.dir)) changed = true;
+  }
+  if (!changed) {
+    throw new Error('Security remediation made no changes');
+  }
+  await reportLog(jobId, 'Approved security remediation changed the checkout. Build, tests, and the security scan will run again.');
 }
 
 async function workspaceReady(task, taskRoot) {
