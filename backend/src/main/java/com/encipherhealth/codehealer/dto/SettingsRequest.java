@@ -19,4 +19,11 @@ public class SettingsRequest {
     private String azureOpenAiApiKey;
     private String azureOpenAiApiVersion;
     private String azureOpenAiDeployment;
+
+    private Boolean killSwitchArmed;
+    private String killSwitchReason;
+    private Boolean requireChangePlanApproval;
+    private Boolean testsMustPass;
+    private Boolean securityScansEnabled;
+    private Boolean failClosedEnabled;
 }

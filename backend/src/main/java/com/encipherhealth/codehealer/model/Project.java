@@ -31,6 +31,10 @@ public class Project {
     @Builder.Default
     private AgilePlatform agilePlatform = AgilePlatform.ZOHO;
 
+    /** CODING (default) or L1_SUPPORT. Null in existing documents means CODING. */
+    @Builder.Default
+    private MissionType agentMode = MissionType.CODING;
+
     /** Zoho Sprints Team ID - CodeHealer polls this project's board for new bug tickets. */
     private String zohoTeamId;
     /** Zoho Sprints' own Project ID (distinct from our internal id). */
@@ -55,6 +59,10 @@ public class Project {
 
     public AgilePlatform resolvedPlatform() {
         return agilePlatform != null ? agilePlatform : AgilePlatform.ZOHO;
+    }
+
+    public MissionType resolvedAgentMode() {
+        return agentMode != null ? agentMode : MissionType.CODING;
     }
 
     private Instant createdAt;

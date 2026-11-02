@@ -158,7 +158,7 @@ public class JiraCloudClient {
         int startAt = 0;
         for (int page = 0; page < 10; page++) {
             JsonNode body = json(call(site, "comments " + key, HttpMethod.GET,
-                    "/rest/api/3/issue/" + key + "/comment?startAt=" + startAt + "&maxResults=100&orderBy=created",
+                    "/rest/api/3/issue/" + key + "/comment?startAt=" + startAt + "&maxResults=100",
                     null));
             JsonNode comments = body.path("comments");
             if (!comments.isArray() || comments.isEmpty()) {

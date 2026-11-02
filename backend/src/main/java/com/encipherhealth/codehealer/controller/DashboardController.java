@@ -48,8 +48,10 @@ public class DashboardController {
                 .toList();
 
         long total = jobs.size();
-        long fixed = jobs.stream().filter(j -> j.getStatus() == JobStatus.NOTIFIED).count();
-        long failed = jobs.stream().filter(j -> j.getStatus() == JobStatus.FAILED).count();
+        long fixed = jobs.stream().filter(j -> j.getStatus() == JobStatus.NOTIFIED || j.getStatus() == JobStatus.CLOSED).count();
+        long failed = jobs.stream().filter(j -> j.getStatus() == JobStatus.FAILED
+                || j.getStatus() == JobStatus.CANCELLED
+                || j.getStatus() == JobStatus.ESCALATED).count();
         long inProgress = total - fixed - failed;
 
         Map<String, long[]> buckets = new LinkedHashMap<>();
@@ -57,8 +59,9 @@ public class DashboardController {
             String label = bucketLabel(job.getCreatedAt(), groupBy);
             long[] counts = buckets.computeIfAbsent(label, k -> new long[]{0, 0, 0});
             counts[0]++;
-            if (job.getStatus() == JobStatus.NOTIFIED) counts[1]++;
-            if (job.getStatus() == JobStatus.FAILED) counts[2]++;
+            if (job.getStatus() == JobStatus.NOTIFIED || job.getStatus() == JobStatus.CLOSED) counts[1]++;
+            if (job.getStatus() == JobStatus.FAILED || job.getStatus() == JobStatus.CANCELLED
+                    || job.getStatus() == JobStatus.ESCALATED) counts[2]++;
         }
 
         List<DashboardBucket> bucketList = buckets.entrySet().stream()

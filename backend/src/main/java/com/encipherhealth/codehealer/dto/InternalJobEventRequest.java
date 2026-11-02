@@ -9,6 +9,8 @@ public record InternalJobEventRequest(
         String message,
         String logLevel,
         String logMessage,
-        String prUrl
+        String prUrl,
+        String changePlan,
+        String securityScanSummary
 ) {
 }

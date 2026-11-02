@@ -48,8 +48,9 @@ export function ProjectsPage() {
   return (
       <div className="flex flex-col gap-6">
         <div>
+          <p className="eyebrow">Workspace</p>
           <h1 className="page-title">Projects</h1>
-          <p className="text-sm text-[color:var(--color-text-400)]">
+          <p className="mt-1 text-sm text-[color:var(--color-text-400)]">
             Zoho or Jira projects, services, and credentials. New projects are added from Admin.
           </p>
         </div>

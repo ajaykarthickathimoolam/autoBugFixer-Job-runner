@@ -28,3 +28,52 @@ export function reportLog(jobId, message, level = 'INFO') {
 export function reportStatus(jobId, status, extra = {}) {
   return reportEvent(jobId, { status, ...extra });
 }
+
+/**
+ * Fail-closed: any transport or non-OK response denies the action.
+ */
+export async function checkGuard(jobId, action) {
+  try {
+    const url = `${BACKEND_URL}/api/internal/jobs/guard?jobId=${encodeURIComponent(jobId)}&action=${encodeURIComponent(action)}`;
+    const res = await fetch(url, {
+      headers: { 'X-Internal-Secret': SHARED_SECRET },
+    });
+    if (!res.ok) {
+      return { allowed: false, reason: `Guard unavailable (${res.status})`, haltStatus: 'FAILED' };
+    }
+    return await res.json();
+  } catch (err) {
+    return { allowed: false, reason: `Guard fail-closed: ${err.message}`, haltStatus: 'FAILED' };
+  }
+}
+
+export async function lookupIdempotency(key) {
+  try {
+    const res = await fetch(
+        `${BACKEND_URL}/api/internal/jobs/idempotency?key=${encodeURIComponent(key)}`,
+        { headers: { 'X-Internal-Secret': SHARED_SECRET } }
+    );
+    if (!res.ok) {
+      return null;
+    }
+    const body = await res.json();
+    return body.exists ? body.result : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function rememberIdempotency(key, jobId, action, result) {
+  try {
+    await fetch(`${BACKEND_URL}/api/internal/jobs/idempotency`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Internal-Secret': SHARED_SECRET,
+      },
+      body: JSON.stringify({ key, jobId, action, result }),
+    });
+  } catch (err) {
+    logger.error(`Failed to persist idempotency key ${key}: ${err.message}`);
+  }
+}

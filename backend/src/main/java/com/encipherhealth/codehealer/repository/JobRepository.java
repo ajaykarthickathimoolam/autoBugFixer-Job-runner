@@ -13,4 +13,6 @@ public interface JobRepository extends MongoRepository<Job, String> {
     boolean existsByProjectIdAndTicketId(String projectId, String ticketId);
 
     List<Job> findByStatus(JobStatus status);
+
+    long countByStatus(JobStatus status);
 }

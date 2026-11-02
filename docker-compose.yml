@@ -1,3 +1,11 @@
+name: codehealer
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
 services:
   mongodb:
     image: mongo:7
@@ -7,6 +15,13 @@ services:
       - mongo-data:/data/db
     ports:
       - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
     networks:
       - codehealer-net
 
@@ -16,18 +31,29 @@ services:
     container_name: codehealer-backend
     restart: unless-stopped
     depends_on:
-      - mongodb
+      mongodb:
+        condition: service_healthy
     environment:
       SPRING_DATA_MONGODB_URI: mongodb://mongodb:27017/codehealer
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-prod-min-32-chars-long}
-      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-change-me-32-byte-base64-key===}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-min-32-chars}
+      APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-ZGV2LW9ubHktMzItYnl0ZS1rZXktY2hhbmdlIQ==}
       JOB_RUNNER_URL: http://job-runner:4100
       JOB_RUNNER_SHARED_SECRET: ${JOB_RUNNER_SHARED_SECRET:-dev-shared-secret}
-      ZOHO_ACCOUNTS_BASE_URL: ${ZOHO_ACCOUNTS_BASE_URL:-https://accounts.zoho.in}
-      ZOHO_SPRINTS_API_BASE_URL: ${ZOHO_SPRINTS_API_BASE_URL:-https://sprintsapi.zoho.in/zsapi}
+      ZOHO_ACCOUNTS_BASE_URL: ${ZOHO_ACCOUNTS_BASE_URL:-https://accounts.zoho.com}
+      ZOHO_SPRINTS_API_BASE_URL: ${ZOHO_SPRINTS_API_BASE_URL:-https://sprintsapi.zoho.com/zsapi}
+      JIRA_WEBHOOK_SECRET: ${JIRA_WEBHOOK_SECRET:-}
       APP_CORS_ORIGIN: ${APP_CORS_ORIGIN:-http://localhost:5173,http://127.0.0.1:5173}
+      SEED_ADMIN_USERNAME: ${SEED_ADMIN_USERNAME:-sarathi}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-sarathi@7}
     ports:
       - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    logging: *default-logging
     networks:
       - codehealer-net
 
@@ -36,13 +62,27 @@ services:
       context: ./job-runner
     container_name: codehealer-job-runner
     restart: unless-stopped
+    init: true
+    depends_on:
+      backend:
+        condition: service_healthy
     environment:
       PORT: 4100
+      HOME: /home/node
+      WORKSPACE_ROOT: /workspace
       BACKEND_INTERNAL_URL: http://backend:8080
       JOB_RUNNER_SHARED_SECRET: ${JOB_RUNNER_SHARED_SECRET:-dev-shared-secret}
+      GIT_TERMINAL_PROMPT: "0"
     volumes:
       - job-workspace:/workspace
       - job-runner-claude-home:/home/node
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4100/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
     networks:
       - codehealer-net
 
@@ -52,9 +92,17 @@ services:
     container_name: codehealer-frontend
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     ports:
       - "5173:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    logging: *default-logging
     networks:
       - codehealer-net
 

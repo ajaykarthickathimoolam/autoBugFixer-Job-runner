@@ -10,6 +10,9 @@ import com.encipherhealth.codehealer.repository.ProjectRepository;
 import com.encipherhealth.codehealer.security.PageAccessService;
 import com.encipherhealth.codehealer.security.ProjectAccessService;
 import com.encipherhealth.codehealer.service.JobIntakeService;
+import com.encipherhealth.codehealer.service.JobMapper;
+import com.encipherhealth.codehealer.service.MissionControlService;
+import com.encipherhealth.codehealer.service.TraceService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -39,6 +42,9 @@ public class JobController {
     private final PageAccessService pageAccessService;
     private final ProjectAccessService projectAccessService;
     private final JobIntakeService jobIntakeService;
+    private final JobMapper jobMapper;
+    private final MissionControlService missionControlService;
+    private final TraceService traceService;
     private final MongoTemplate mongoTemplate;
 
     @GetMapping
@@ -72,7 +78,7 @@ public class JobController {
                 .collect(java.util.stream.Collectors.toMap(Project::getId, p -> p));
 
         List<JobResponse> items = jobs.stream()
-                .map(j -> toResponse(j, projectCache.get(j.getProjectId())))
+                .map(j -> jobMapper.toResponse(j, projectCache.get(j.getProjectId())))
                 .toList();
 
         int totalPages = safePageSize > 0 ? (int) Math.ceil((double) total / safePageSize) : 0;
@@ -132,12 +138,7 @@ public class JobController {
 
     @GetMapping("/{id}")
     public JobResponse get(@PathVariable String id) {
-        pageAccessService.requireAccess(PageAccessService.DASHBOARD);
-        Job job = jobRepository.findById(id)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Job not found"));
-        projectAccessService.requireAccess(job.getProjectId());
-        Project project = projectRepository.findById(job.getProjectId()).orElse(null);
-        return toResponse(job, project);
+        return withJob(id, job -> job);
     }
 
     @DeleteMapping("/{id}")
@@ -157,28 +158,68 @@ public class JobController {
         projectAccessService.requireAccess(existing.getProjectId());
         Job job = jobIntakeService.retryFailedJob(id);
         Project project = projectRepository.findById(job.getProjectId()).orElse(null);
-        return toResponse(job, project);
+        return jobMapper.toResponse(job, project);
     }
 
-    private JobResponse toResponse(Job job, Project project) {
-        return new JobResponse(
-                job.getId(),
-                job.getTicketId(),
-                job.getTicketTitle(),
-                job.getTicketDescription(),
-                job.getCreatorName(),
-                job.getAssigneeName(),
-                job.getProjectId(),
-                project != null ? project.getName() : null,
-                job.getServiceIds(),
-                job.getStatus(),
-                job.getStatusHistory(),
-                job.getLogs(),
-                job.getPrUrl(),
-                job.getFailureReason(),
-                job.getPendingQuestion(),
-                job.getCreatedAt(),
-                job.getUpdatedAt()
-        );
+    @PostMapping("/{id}/pause")
+    public JobResponse pause(@PathVariable String id) {
+        authorize(id);
+        return withJob(id, job -> missionControlService.pause(id));
+    }
+
+    @PostMapping("/{id}/resume")
+    public JobResponse resume(@PathVariable String id) {
+        authorize(id);
+        return withJob(id, job -> missionControlService.resume(id));
+    }
+
+    @PostMapping("/{id}/cancel")
+    public JobResponse cancel(@PathVariable String id, @RequestBody(required = false) Map<String, String> body) {
+        authorize(id);
+        String reason = body == null ? null : body.get("reason");
+        return withJob(id, job -> missionControlService.cancel(id, reason));
+    }
+
+    @PostMapping("/{id}/approve")
+    public JobResponse approve(@PathVariable String id) {
+        authorize(id);
+        return withJob(id, job -> missionControlService.approve(id));
+    }
+
+    @PostMapping("/{id}/answer")
+    public JobResponse answer(@PathVariable String id, @RequestBody(required = false) Map<String, String> body) {
+        authorize(id);
+        String answer = body == null ? null : body.get("answer");
+        return withJob(id, job -> missionControlService.submitClarification(id, answer));
+    }
+
+    @PostMapping("/{id}/reject")
+    public JobResponse reject(@PathVariable String id, @RequestBody(required = false) Map<String, String> body) {
+        authorize(id);
+        String reason = body == null ? null : body.get("reason");
+        return withJob(id, job -> missionControlService.reject(id, reason));
+    }
+
+    @GetMapping("/{id}/trace")
+    public Object trace(@PathVariable String id) {
+        authorize(id);
+        return traceService.forJob(id);
+    }
+
+    private void authorize(String id) {
+        pageAccessService.requireAccess(PageAccessService.DASHBOARD);
+        Job job = jobRepository.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Job not found"));
+        projectAccessService.requireAccess(job.getProjectId());
+    }
+
+    private JobResponse withJob(String id, java.util.function.Function<Job, Job> transform) {
+        pageAccessService.requireAccess(PageAccessService.DASHBOARD);
+        Job job = jobRepository.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Job not found"));
+        projectAccessService.requireAccess(job.getProjectId());
+        Job updated = transform.apply(job);
+        Project project = projectRepository.findById(updated.getProjectId()).orElse(null);
+        return jobMapper.toResponse(updated, project);
     }
 }

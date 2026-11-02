@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { api, ApiError } from '../lib/api';
 import { CredentialGuide } from './CredentialGuide';
-import type { AgilePlatform, ProjectInput, ProjectResponse, ServiceConfigInput } from '../lib/types';
+import type { AgilePlatform, MissionType, ProjectInput, ProjectResponse, ServiceConfigInput } from '../lib/types';
 
 const EMPTY_SERVICE: ServiceConfigInput = {
   name: '',
@@ -31,6 +31,7 @@ function emptyForm(): ProjectInput {
     jiraApiToken: '',
     jiraIssueTypes: 'Bug',
     jiraWebhookSecret: '',
+    agentMode: 'CODING',
     services: [],
   };
 }
@@ -54,6 +55,7 @@ function formFromProject(p: ProjectResponse): ProjectInput {
     jiraApiToken: '',
     jiraIssueTypes: p.jiraIssueTypes ?? 'Bug',
     jiraWebhookSecret: '',
+    agentMode: p.agentMode === 'L1_SUPPORT' ? 'L1_SUPPORT' : 'CODING',
     services: p.services.map((s) => ({ ...s })),
   };
 }
@@ -114,6 +116,16 @@ export function ProjectForm({
             >
               <option value="ZOHO">Zoho Sprints</option>
               <option value="JIRA">Jira Cloud</option>
+            </select>
+          </Field>
+          <Field label="Agent">
+            <select
+                className={inputCls}
+                value={form.agentMode ?? 'CODING'}
+                onChange={(e) => setForm({ ...form, agentMode: e.target.value as MissionType })}
+            >
+              <option value="CODING">Coding agent (investigate, tests, scans, PR)</option>
+              <option value="L1_SUPPORT">L1 support agent (Sage + draft + approval)</option>
             </select>
           </Field>
 

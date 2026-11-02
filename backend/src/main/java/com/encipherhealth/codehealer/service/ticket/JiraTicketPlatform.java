@@ -65,25 +65,83 @@ public class JiraTicketPlatform implements TicketPlatform {
 
     @Override
     public Optional<String> findReplyAfter(Project project, Job job, Instant since) {
-        String configuredEmail = project.getJiraEmail() == null ? "" : project.getJiraEmail().strip();
         String marker = jira.questionMarker();
-        for (JiraComment comment : jira.listComments(project, job.getTicketId())) {
-            if (comment.created() == null || !comment.created().isAfter(since)) {
-                continue;
+        Instant cutoff = since == null ? Instant.EPOCH : since.minusSeconds(5);
+        try {
+            for (JiraComment comment : jira.listComments(project, job.getTicketId())) {
+                if (comment.created() == null || !comment.created().isAfter(cutoff)) {
+                    continue;
+                }
+                String human = extractHumanReply(
+                        comment.bodyMarkdown() == null ? "" : comment.bodyMarkdown(), marker);
+                if (!human.isBlank()) {
+                    log.info("Using Jira comment by {} as the reply for job {}",
+                            comment.authorName(), job.getId());
+                    return Optional.of(human);
+                }
             }
-            String body = comment.bodyMarkdown() == null ? "" : comment.bodyMarkdown();
-            if (body.contains(marker)) {
-                continue;
-            }
-            if (!configuredEmail.isBlank() && configuredEmail.equalsIgnoreCase(comment.authorEmail())) {
-                continue;
-            }
-            String text = body.strip();
-            if (!text.isBlank()) {
-                return Optional.of(text);
-            }
+        } catch (Exception e) {
+            log.warn("Failed to list Jira comments for {}: {}", job.getTicketId(), e.getMessage());
         }
-        return Optional.empty();
+        return descriptionUpdateAsReply(project, job);
+    }
+
+    /**
+     * Keep newly typed text; drop CodeHealer's own question and quoted copies of it.
+     * Same Jira account as the API user is allowed — that is the usual demo setup.
+     */
+    static String extractHumanReply(String body, String marker) {
+        if (body == null || body.isBlank()) {
+            return "";
+        }
+        StringBuilder kept = new StringBuilder();
+        for (String rawLine : body.replace("\r\n", "\n").split("\n", -1)) {
+            String line = rawLine.strip();
+            if (line.isEmpty()) {
+                continue;
+            }
+            if (line.startsWith(">")) {
+                continue;
+            }
+            if (line.equals("---") || line.equals("***")) {
+                continue;
+            }
+            if (marker != null && !marker.isBlank() && line.contains(marker)) {
+                continue;
+            }
+            if (line.regionMatches(true, 0, "**CodeHealer", 0, 12)
+                    || line.regionMatches(true, 0, "CodeHealer —", 0, 12)
+                    || line.regionMatches(true, 0, "CodeHealer -", 0, 12)) {
+                continue;
+            }
+            if (line.toLowerCase().contains("automated by codehealer")) {
+                continue;
+            }
+            if (!kept.isEmpty()) {
+                kept.append('\n');
+            }
+            kept.append(line);
+        }
+        return kept.toString().strip();
+    }
+
+    private Optional<String> descriptionUpdateAsReply(Project project, Job job) {
+        try {
+            Optional<NormalizedTicket> ticket = fetchTicket(project, job.getTicketId());
+            if (ticket.isEmpty()) {
+                return Optional.empty();
+            }
+            String incoming = ticket.get().description() == null ? "" : ticket.get().description().strip();
+            String known = job.getTicketDescription() == null ? "" : job.getTicketDescription().strip();
+            if (incoming.length() < 12 || incoming.equals(known)) {
+                return Optional.empty();
+            }
+            log.info("Using updated Jira description as the reply for job {}", job.getId());
+            return Optional.of(incoming);
+        } catch (Exception e) {
+            log.warn("Failed to compare Jira description for {}: {}", job.getTicketId(), e.getMessage());
+            return Optional.empty();
+        }
     }
 
     @Override

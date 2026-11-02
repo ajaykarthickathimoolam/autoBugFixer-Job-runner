@@ -24,6 +24,14 @@ public record TaskRequest(
         String azureOpenAiEndpoint,
         String azureOpenAiApiKey,
         String azureOpenAiApiVersion,
-        String azureOpenAiDeployment
+        String azureOpenAiDeployment,
+        String phase,
+        String approvedChangePlan,
+        boolean requireChangePlanApproval,
+        boolean testsMustPass,
+        boolean securityScansEnabled,
+        String sageContext,
+        String resumeFrom,
+        String securityScanSummary
 ) {
 }

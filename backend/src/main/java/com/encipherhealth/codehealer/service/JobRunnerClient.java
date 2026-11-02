@@ -45,4 +45,13 @@ public class JobRunnerClient {
                 .toBodilessEntity()
                 .block(Duration.ofSeconds(15));
     }
+
+    public void abortTask(String jobId) {
+        webClient.post()
+                .uri("/tasks/{jobId}/abort", jobId)
+                .header("X-Internal-Secret", sharedSecret)
+                .retrieve()
+                .toBodilessEntity()
+                .block(Duration.ofSeconds(10));
+    }
 }

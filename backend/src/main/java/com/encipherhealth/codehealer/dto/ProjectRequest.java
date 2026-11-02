@@ -31,6 +31,8 @@ public class ProjectRequest {
 
     /** ZOHO (default) or JIRA. */
     private String agilePlatform;
+    /** CODING (default) or L1_SUPPORT. */
+    private String agentMode;
 
     private String jiraBaseUrl;
     private String jiraProjectKey;

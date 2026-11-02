@@ -7,6 +7,7 @@ interface AuthContextValue {
   username: string | null;
   pageAccess: PageKey[] | null;
   login: (username: string, password: string) => Promise<void>;
+  register: (username: string, password: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -35,12 +36,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function login(usernameInput: string, password: string) {
-    const res = await api.login(usernameInput, password);
+  function applySession(res: { token: string; username: string; pageAccess: PageKey[] }) {
     setSession(res.token, res.username, res.pageAccess);
     setToken(res.token);
     setUsername(res.username);
     setPageAccess(res.pageAccess);
+  }
+
+  async function login(usernameInput: string, password: string) {
+    applySession(await api.login(usernameInput, password));
+  }
+
+  async function register(usernameInput: string, password: string) {
+    applySession(await api.register(usernameInput, password));
   }
 
   function logout() {
@@ -51,7 +59,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-      <AuthContext.Provider value={{ token, username, pageAccess, login, logout }}>{children}</AuthContext.Provider>
+      <AuthContext.Provider value={{ token, username, pageAccess, login, register, logout }}>{children}</AuthContext.Provider>
   );
 }
 

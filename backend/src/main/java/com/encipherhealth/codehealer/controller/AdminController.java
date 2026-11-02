@@ -10,6 +10,7 @@ import com.encipherhealth.codehealer.security.PageAccessService;
 import com.encipherhealth.codehealer.service.EncryptionService;
 import com.encipherhealth.codehealer.service.GptConnectionTestService;
 import com.encipherhealth.codehealer.service.JobQueueService;
+import com.encipherhealth.codehealer.service.TraceService;
 import com.encipherhealth.codehealer.service.ticket.TicketPollerService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -40,6 +41,7 @@ public class AdminController {
     private final TicketPollerService ticketPollerService;
     private final PageAccessService pageAccessService;
     private final GptConnectionTestService gptConnectionTestService;
+    private final TraceService traceService;
 
     @GetMapping
     public SettingsResponse get() {
@@ -84,6 +86,31 @@ public class AdminController {
         if (request.getAzureOpenAiDeployment() != null && !request.getAzureOpenAiDeployment().isBlank()) {
             settings.setAzureOpenAiDeployment(request.getAzureOpenAiDeployment().strip());
         }
+        if (request.getKillSwitchArmed() != null) {
+            boolean wasArmed = settings.isKillSwitchArmed();
+            settings.setKillSwitchArmed(request.getKillSwitchArmed());
+            if (request.getKillSwitchReason() != null) {
+                settings.setKillSwitchReason(request.getKillSwitchReason());
+            }
+            if (request.getKillSwitchArmed() && !wasArmed) {
+                traceService.record(null, null, "GUARD", "admin", "KILL_SWITCH_ARM", settings.getKillSwitchReason());
+            } else if (!request.getKillSwitchArmed() && wasArmed) {
+                settings.setKillSwitchReason(null);
+                traceService.record(null, null, "GUARD", "admin", "KILL_SWITCH_DISARM", null);
+            }
+        }
+        if (request.getRequireChangePlanApproval() != null) {
+            settings.setRequireChangePlanApproval(request.getRequireChangePlanApproval());
+        }
+        if (request.getTestsMustPass() != null) {
+            settings.setTestsMustPass(request.getTestsMustPass());
+        }
+        if (request.getSecurityScansEnabled() != null) {
+            settings.setSecurityScansEnabled(request.getSecurityScansEnabled());
+        }
+        if (request.getFailClosedEnabled() != null) {
+            settings.setFailClosedEnabled(request.getFailClosedEnabled());
+        }
         settingsRepository.save(settings);
         return toResponse(settings);
     }
@@ -108,6 +135,11 @@ public class AdminController {
                         .clarificationLevel(DEFAULT_CLARIFICATION_LEVEL)
                         .llmProvider(DEFAULT_LLM_PROVIDER)
                         .azureOpenAiApiVersion(DEFAULT_AZURE_API_VERSION)
+                        .killSwitchArmed(false)
+                        .requireChangePlanApproval(true)
+                        .testsMustPass(true)
+                        .securityScansEnabled(true)
+                        .failClosedEnabled(true)
                         .build());
     }
 
@@ -133,7 +165,13 @@ public class AdminController {
                 settings.getAzureOpenAiApiKeyEncrypted() != null,
                 settings.getAzureOpenAiEndpoint(),
                 apiVersion,
-                settings.getAzureOpenAiDeployment());
+                settings.getAzureOpenAiDeployment(),
+                settings.isKillSwitchArmed(),
+                settings.getKillSwitchReason(),
+                settings.isRequireChangePlanApproval(),
+                settings.isTestsMustPass(),
+                settings.isSecurityScansEnabled(),
+                settings.isFailClosedEnabled());
     }
 
     private static String firstNonBlank(String... values) {

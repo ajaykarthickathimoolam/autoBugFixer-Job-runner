@@ -1,7 +1,9 @@
 import express from 'express';
 import { runTask } from './taskRunner.js';
 import { prepareProject } from './lib/prepareProject.js';
+import { requestAbort } from './lib/abort.js';
 import { logger } from './lib/logger.js';
+import { workspaceRoot } from './lib/workspace.js';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -45,4 +47,13 @@ app.post('/tasks', requireInternalSecret, (req, res) => {
   });
 });
 
-app.listen(PORT, () => logger.info(`job-runner listening on ${PORT}`));
+app.post('/tasks/:jobId/abort', requireInternalSecret, (req, res) => {
+  const { jobId } = req.params;
+  if (!jobId) {
+    return res.status(400).json({ error: 'missing jobId' });
+  }
+  requestAbort(jobId);
+  res.json({ aborted: true, jobId });
+});
+
+app.listen(PORT, () => logger.info(`job-runner listening on ${PORT}, workspace ${workspaceRoot()}`));

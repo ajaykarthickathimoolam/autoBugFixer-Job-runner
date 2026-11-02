@@ -57,10 +57,25 @@ export type JobStatus =
     | 'CLONING'
     | 'FIXING'
     | 'VERIFYING'
+    | 'SCANNING'
     | 'AWAITING_INPUT'
+    | 'AWAITING_APPROVAL'
+    | 'PAUSED'
     | 'PR_CREATED'
     | 'NOTIFIED'
+    | 'CLOSED'
+    | 'ESCALATED'
+    | 'CANCELLED'
     | 'FAILED';
+
+export type MissionType = 'CODING' | 'L1_SUPPORT';
+
+export interface SageCitation {
+  documentId: string;
+  title: string;
+  excerpt: string;
+  version: number;
+}
 
 export interface JobLogEntry {
   timestamp: string;
@@ -91,6 +106,19 @@ export interface JobResponse {
   pendingQuestion: string | null;
   createdAt: string;
   updatedAt: string;
+  missionType: MissionType | string | null;
+  changePlan: string | null;
+  approvedBy: string | null;
+  approvedAt: string | null;
+  pausedBy: string | null;
+  cancelledBy: string | null;
+  cancellationReason: string | null;
+  securityScanSummary: string | null;
+  l1Classification: string | null;
+  l1DraftResponse: string | null;
+  l1Citations: SageCitation[] | null;
+  l1EscalationReason: string | null;
+  resumeFrom: string | null;
 }
 
 export interface JobPageResponse {
@@ -139,6 +167,7 @@ export interface ProjectResponse {
   jiraIssueTypes: string | null;
   hasJiraWebhookSecret: boolean;
   lastPolledAt: string | null;
+  agentMode: MissionType | string;
   services: ServiceConfig[];
   createdAt: string;
   updatedAt: string;
@@ -162,6 +191,7 @@ export interface ProjectInput {
   jiraApiToken?: string;
   jiraIssueTypes?: string;
   jiraWebhookSecret?: string;
+  agentMode?: MissionType;
   services: ServiceConfigInput[];
 }
 
@@ -194,6 +224,12 @@ export interface SettingsResponse {
   azureOpenAiEndpoint: string | null;
   azureOpenAiApiVersion: string | null;
   azureOpenAiDeployment: string | null;
+  killSwitchArmed: boolean;
+  killSwitchReason: string | null;
+  requireChangePlanApproval: boolean;
+  testsMustPass: boolean;
+  securityScansEnabled: boolean;
+  failClosedEnabled: boolean;
 }
 
 export interface ZohoProjectSummary {
@@ -219,4 +255,51 @@ export interface JiraConnectionTestResponse {
   email: string;
   timeZone: string;
   projects: JiraProjectSummary[];
+}
+
+export interface PulseOverview {
+  killSwitchArmed: boolean;
+  killSwitchReason: string | null;
+  failClosedEnabled: boolean;
+  activeJobs: number;
+  maxConcurrentJobs: number;
+  awaitingApproval: number;
+  paused: number;
+  openExceptions: number;
+}
+
+export interface ExceptionRecord {
+  id: string;
+  jobId: string;
+  projectId: string;
+  kind: string;
+  message: string;
+  status: string;
+  createdAt: string;
+  resolvedAt: string | null;
+  resolvedBy: string | null;
+}
+
+export interface KnowledgeDocument {
+  id: string;
+  projectId: string;
+  title: string;
+  source: string;
+  content: string;
+  version: number;
+  visibility: string;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TraceEvent {
+  id: string;
+  jobId: string;
+  projectId: string;
+  kind: string;
+  actor: string;
+  action: string;
+  detail: string;
+  timestamp: string;
 }

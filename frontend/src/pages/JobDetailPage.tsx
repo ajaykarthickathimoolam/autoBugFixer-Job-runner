@@ -4,19 +4,47 @@ import DOMPurify from 'dompurify';
 import { api, ApiError } from '../lib/api';
 import { useJobEvents } from '../lib/sse';
 import { StatusBadge } from '../components/StatusBadge';
-import type { JobResponse, JobStatus } from '../lib/types';
+import type { JobResponse, JobStatus, TraceEvent } from '../lib/types';
 
 const STEP_LABELS: Record<JobStatus, string> = {
   RECEIVED: 'Ticket received',
-  ANALYZING: 'Analyzing with Claude',
+  ANALYZING: 'Investigating / planning',
   CLONING: 'Cloning repository',
   FIXING: 'Applying the fix',
   VERIFYING: 'Running build/tests',
+  SCANNING: 'Security scans',
   AWAITING_INPUT: 'Waiting on a clarifying answer',
+  AWAITING_APPROVAL: 'Waiting on human approval',
+  PAUSED: 'Paused',
   PR_CREATED: 'Pull request opened',
-  NOTIFIED: 'Cliq notified',
+  NOTIFIED: 'Stakeholders notified',
+  CLOSED: 'L1 response posted',
+  ESCALATED: 'Escalated to human queue',
+  CANCELLED: 'Cancelled',
   FAILED: 'Failed',
 };
+
+const RESUME_LABELS: Record<string, string> = {
+  PLAN: 'planning',
+  CLONE: 'cloning',
+  FIX: 'the fix',
+  VERIFY: 'build and tests',
+  SCAN: 'security scans',
+  PUSH: 'the push',
+  PR: 'the pull request',
+};
+
+const PAUSABLE: JobStatus[] = [
+  'RECEIVED',
+  'ANALYZING',
+  'CLONING',
+  'FIXING',
+  'VERIFYING',
+  'SCANNING',
+  'AWAITING_INPUT',
+  'AWAITING_APPROVAL',
+];
+const RETRYABLE: JobStatus[] = ['FAILED', 'CANCELLED', 'ESCALATED'];
 
 function formatDateTime(iso: string | null | undefined) {
   if (!iso) return '—';
@@ -40,15 +68,14 @@ export function JobDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
-  const [retrying, setRetrying] = useState(false);
+  const [acting, setActing] = useState<string | null>(null);
+  const [trace, setTrace] = useState<TraceEvent[] | null>(null);
+  const [clarification, setClarification] = useState('');
 
   useEffect(() => {
     if (!id) return;
-    api
-        .getJob(id)
-        .then(setJob)
-        .catch((err) => setError(err instanceof ApiError ? err.message : 'Failed to load job'))
-        .finally(() => setLoading(false));
+    api.getJob(id).then(setJob).catch((err) => setError(err instanceof ApiError ? err.message : 'Failed to load job')).finally(() => setLoading(false));
+    api.jobTrace(id).then(setTrace).catch(() => setTrace([]));
   }, [id]);
 
   useJobEvents((updated) => {
@@ -57,17 +84,19 @@ export function JobDetailPage() {
     }
   });
 
-  async function handleRetry() {
-    if (!id) return;
-    setRetrying(true);
+  async function act(label: string, fn: () => Promise<JobResponse>) {
+    setActing(label);
     setError(null);
     try {
-      const updated = await api.retryJob(id);
+      const updated = await fn();
       setJob(updated);
+      if (id) {
+        api.jobTrace(id).then(setTrace).catch(() => {});
+      }
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Retry failed');
+      setError(err instanceof ApiError ? err.message : `${label} failed`);
     } finally {
-      setRetrying(false);
+      setActing(null);
     }
   }
 
@@ -110,14 +139,45 @@ export function JobDetailPage() {
             </div>
             {job.ticketTitle && <p className="mt-1 text-[color:var(--color-text-100)]">{job.ticketTitle}</p>}
           </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {job.status === 'FAILED' && (
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+            {PAUSABLE.includes(job.status) && (
                 <button
-                    onClick={handleRetry}
-                    disabled={retrying}
+                    onClick={() => id && act('Pause', () => api.pauseJob(id))}
+                    disabled={!!acting}
+                    className="rounded-lg border border-[color:var(--color-border-800)] px-3 py-1.5 text-xs hover:border-[color:var(--color-accent-amber)]/50 disabled:opacity-50"
+                >
+                  {acting === 'Pause' ? 'Pausing…' : 'Pause'}
+                </button>
+            )}
+            {job.status === 'PAUSED' && (
+                <button
+                    onClick={() => id && act('Resume', () => api.resumeJob(id))}
+                    disabled={!!acting}
+                    className="rounded-lg border border-[color:var(--color-accent-primary)]/40 px-3 py-1.5 text-xs text-[color:var(--color-accent-primary)] disabled:opacity-50"
+                >
+                  {acting === 'Resume' ? 'Resuming…' : 'Resume'}
+                </button>
+            )}
+            {PAUSABLE.includes(job.status) || job.status === 'PAUSED' ? (
+                <button
+                    onClick={() => {
+                      if (!id) return;
+                      const reason = prompt('Cancel reason (optional)') ?? undefined;
+                      act('Cancel', () => api.cancelJob(id, reason));
+                    }}
+                    disabled={!!acting}
+                    className="rounded-lg border border-[color:var(--color-border-800)] px-3 py-1.5 text-xs text-[color:var(--color-accent-red)] disabled:opacity-50"
+                >
+                  {acting === 'Cancel' ? 'Cancelling…' : 'Cancel'}
+                </button>
+            ) : null}
+            {RETRYABLE.includes(job.status) && (
+                <button
+                    onClick={() => id && act('Retry', () => api.retryJob(id))}
+                    disabled={!!acting}
                     className="rounded-lg border border-[color:var(--color-accent-primary)]/40 px-3 py-1.5 text-xs text-[color:var(--color-accent-primary)] hover:border-[color:var(--color-accent-primary)] disabled:opacity-50"
                 >
-                  {retrying ? 'Retrying…' : 'Retry job'}
+                  {acting === 'Retry' ? 'Retrying…' : 'Retry job'}
                 </button>
             )}
             <button
@@ -134,30 +194,111 @@ export function JobDetailPage() {
             <p className="text-sm text-[color:var(--color-accent-red)]">{error}</p>
         )}
 
-        {job.status === 'FAILED' && (
-            <div className="rounded-2xl border border-[color:var(--color-accent-red)]/40 bg-[color:var(--color-accent-red)]/5 p-4">
-              <p className="text-sm font-medium text-[color:var(--color-accent-red)]">
-                Failed{failedDuringStep ? ` during ${STEP_LABELS[failedDuringStep]}` : ''}
-              </p>
-              {job.failureReason && <p className="mt-1 text-sm text-[color:var(--color-text-100)]">{job.failureReason}</p>}
-              <p className="mt-2 text-xs text-[color:var(--color-text-400)]">
-                This ticket will not be picked up again automatically. Use Retry job to requeue it.
+        {job.status === 'PAUSED' && (
+            <div className="rounded-2xl border border-[color:var(--color-accent-amber)]/40 bg-[color:var(--color-accent-amber)]/5 p-4">
+              <p className="text-sm font-medium text-[color:var(--color-accent-amber)]">Job is paused</p>
+              <p className="mt-1 text-sm text-[color:var(--color-text-100)]">
+                {job.pausedBy === 'guard'
+                    ? 'The kill switch or Guard stopped this job. If Admin → Settings still has the kill switch on, turn it off first, then click Resume.'
+                    : job.pausedBy
+                      ? `Paused by ${job.pausedBy}. Click Resume to continue, or Cancel to stop.`
+                      : 'Click Resume to continue, or Cancel to stop.'}
               </p>
             </div>
         )}
 
-        {job.status === 'AWAITING_INPUT' && job.pendingQuestion && (
-            <div className="rounded-2xl border border-violet-500/40 bg-violet-500/5 p-4">
-              <p className="text-sm font-medium text-violet-300">Claude has a question, posted as a comment on the ticket</p>
-              <p className="mt-1 text-sm text-[color:var(--color-text-100)]">{job.pendingQuestion}</p>
-              <p className="mt-2 text-xs text-[color:var(--color-text-400)]">
-                Reply on the ticket itself - CodeHealer checks for an answer on its next poll and resumes the fix automatically.
+        {job.status === 'FAILED' && (
+            <div className="rounded-2xl border border-[color:var(--color-accent-red)]/40 bg-[color:var(--color-accent-red)]/5 p-4">
+              <p className="text-sm font-medium text-[color:var(--color-accent-red)]">
+              Failed{failedDuringStep ? ` during ${job.resumeFrom ? (RESUME_LABELS[job.resumeFrom] ?? job.resumeFrom) : (STEP_LABELS[failedDuringStep] ?? failedDuringStep)}` : ''}
               </p>
+              {job.failureReason && <p className="mt-1 text-sm text-[color:var(--color-text-100)]">{job.failureReason}</p>}
+              <p className="mt-2 text-xs text-[color:var(--color-text-400)]">
+                {job.resumeFrom
+                    ? `Retry continues from ${RESUME_LABELS[job.resumeFrom] ?? 'the failed step'}. Steps that already succeeded are skipped.`
+                    : 'CodeHealer will not pick this ticket up again on its own. Retry it here.'}
+              </p>
+              <button
+                  onClick={() => id && act('Retry', () => api.retryJob(id))}
+                  disabled={!!acting}
+                  className="mt-3 rounded-lg bg-[color:var(--color-accent-green)] px-4 py-2 text-sm font-semibold text-[color:var(--color-on-positive)] disabled:opacity-50"
+              >
+                {acting === 'Retry' ? 'Retrying…' : job.resumeFrom ? `Retry from ${RESUME_LABELS[job.resumeFrom] ?? 'the failed step'}` : 'Retry this job'}
+              </button>
+            </div>
+        )}
+
+        {job.status === 'AWAITING_APPROVAL' && (
+            <div className="rounded-2xl border border-[color:var(--color-accent-violet)]/40 bg-[color:var(--color-accent-violet)]/5 p-4">
+              <p className="text-sm font-medium text-[color:var(--color-accent-violet)]">
+                {job.missionType === 'L1_SUPPORT' ? 'L1 draft waiting for approval' : 'Change plan waiting for approval'}
+              </p>
+              <p className="mt-2 whitespace-pre-wrap text-sm text-[color:var(--color-text-100)]">
+                {job.missionType === 'L1_SUPPORT' ? job.l1DraftResponse : job.changePlan}
+              </p>
+              {job.l1Citations && job.l1Citations.length > 0 && (
+                  <ul className="mt-2 list-disc pl-5 text-xs text-[color:var(--color-text-400)]">
+                    {job.l1Citations.map((c) => (
+                        <li key={c.documentId}>
+                          {c.title} v{c.version}: {c.excerpt}
+                        </li>
+                    ))}
+                  </ul>
+              )}
+              <div className="mt-3 flex gap-2">
+                <button
+                    onClick={() => id && act('Approve', () => api.approveJob(id))}
+                    disabled={!!acting}
+                    className="rounded-lg bg-[color:var(--color-accent-green)] px-4 py-2 text-sm font-semibold text-[color:var(--color-on-positive)] disabled:opacity-50"
+                >
+                  {acting === 'Approve' ? 'Approving…' : 'Approve'}
+                </button>
+                <button
+                    onClick={() => {
+                      if (!id) return;
+                      const reason = prompt('Reject / escalate reason') ?? undefined;
+                      act('Reject', () => api.rejectJob(id, reason));
+                    }}
+                    disabled={!!acting}
+                    className="rounded-lg border border-[color:var(--color-accent-red)]/40 px-4 py-2 text-sm text-[color:var(--color-accent-red)] disabled:opacity-50"
+                >
+                  {acting === 'Reject' ? 'Rejecting…' : job.missionType === 'L1_SUPPORT' ? 'Escalate' : 'Reject'}
+                </button>
+              </div>
+            </div>
+        )}
+
+        {job.status === 'AWAITING_INPUT' && (
+            <div className="rounded-2xl border border-[color:var(--color-accent-violet)]/40 bg-[color:var(--color-accent-violet)]/5 p-4">
+              <p className="text-sm font-medium text-[color:var(--color-accent-violet)]">Waiting on a clarifying answer</p>
+              {job.pendingQuestion && (
+                  <p className="mt-1 text-sm text-[color:var(--color-text-100)]">{job.pendingQuestion}</p>
+              )}
+              <p className="mt-2 text-xs text-[color:var(--color-text-400)]">
+                Reply on the Jira/Zoho ticket, or paste the answer here and submit. CodeHealer only
+                reads a new comment (not an in-app chat). If you quoted the question, include your
+                own new text below it.
+              </p>
+              <textarea
+                  value={clarification}
+                  onChange={(e) => setClarification(e.target.value)}
+                  rows={4}
+                  placeholder="What should change, in which service/file, and expected vs actual behaviour…"
+                  className="mt-3 w-full rounded-lg border border-[color:var(--color-border-800)] bg-[color:var(--color-bg-900)] px-3 py-2 text-sm outline-none focus:border-[color:var(--color-accent-primary)]"
+              />
+              <button
+                  onClick={() => id && act('Submit answer', () => api.answerJob(id, clarification.trim()))}
+                  disabled={!!acting || !clarification.trim()}
+                  className="mt-3 rounded-lg bg-[color:var(--color-accent-green)] px-4 py-2 text-sm font-semibold text-[color:var(--color-on-positive)] disabled:opacity-50"
+              >
+                {acting === 'Submit answer' ? 'Submitting…' : 'Submit answer and resume'}
+              </button>
             </div>
         )}
 
         <div className="glow-border grid grid-cols-2 gap-4 rounded-2xl bg-[color:var(--color-panel-900)]/80 p-6 sm:grid-cols-3">
           <InfoField label="Project" value={job.projectName ?? '—'} />
+          <InfoField label="Mission" value={job.missionType === 'L1_SUPPORT' ? 'L1 support' : 'Coding'} />
           <InfoField label="Created by" value={job.creatorName ?? '—'} />
           <InfoField label="Assignee" value={job.assigneeName ?? '—'} />
           <InfoField label="Received" value={formatDateTime(job.createdAt)} />
@@ -180,7 +321,7 @@ export function JobDetailPage() {
             <div className="glow-border rounded-2xl bg-[color:var(--color-panel-900)]/80 p-6">
               <h2 className="mb-2 text-sm font-semibold text-[color:var(--color-text-400)]">Ticket description</h2>
               <div
-                  className="prose-invert max-w-none text-sm text-[color:var(--color-text-100)] [&_a]:text-[color:var(--color-accent-teal)] [&_strong]:font-semibold"
+                  className="max-w-none text-sm text-[color:var(--color-text-100)] [&_a]:text-[color:var(--color-accent-teal)] [&_strong]:font-semibold"
                   // Ticket descriptions may be rich-text HTML from the agile host - sanitize
                   // before rendering since this is untrusted content, not plain text.
                   dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(job.ticketDescription) }}
@@ -212,7 +353,7 @@ export function JobDetailPage() {
                     />
                     <div className="flex flex-1 flex-wrap items-baseline justify-between gap-2">
                       <span className={`text-sm font-medium ${isFailed ? 'text-[color:var(--color-accent-red)]' : 'text-[color:var(--color-text-100)]'}`}>
-                        {STEP_LABELS[event.status]}
+                        {STEP_LABELS[event.status] ?? event.status}
                       </span>
                       <span className="text-xs text-[color:var(--color-text-600)]">
                         {formatDateTime(event.timestamp)}
@@ -224,6 +365,39 @@ export function JobDetailPage() {
             })}
           </ol>
         </div>
+
+        {job.securityScanSummary && (
+            <div className="glow-border rounded-2xl bg-[color:var(--color-panel-900)]/80 p-6">
+              <h2 className="mb-2 text-sm font-semibold text-[color:var(--color-text-400)]">Security scan evidence</h2>
+              <pre className="whitespace-pre-wrap font-mono-brand text-xs text-[color:var(--color-text-100)]">{job.securityScanSummary}</pre>
+            </div>
+        )}
+
+        {job.changePlan && job.status !== 'AWAITING_APPROVAL' && (
+            <div className="glow-border rounded-2xl bg-[color:var(--color-panel-900)]/80 p-6">
+              <h2 className="mb-2 text-sm font-semibold text-[color:var(--color-text-400)]">
+                Change plan {job.approvedBy ? `(approved by ${job.approvedBy})` : ''}
+              </h2>
+              <pre className="whitespace-pre-wrap text-sm text-[color:var(--color-text-100)]">{job.changePlan}</pre>
+            </div>
+        )}
+
+        {trace && trace.length > 0 && (
+            <div className="glow-border rounded-2xl bg-[color:var(--color-panel-900)]/80 p-6">
+              <h2 className="mb-4 text-sm font-semibold text-[color:var(--color-text-400)]">Trace</h2>
+              <div className="flex max-h-64 flex-col gap-2 overflow-y-auto font-mono-brand text-xs">
+                {trace.map((event, i) => (
+                    <div key={event.id || i} className="flex gap-3 border-b border-[color:var(--color-border-800)] pb-2">
+                      <span className="shrink-0 text-[color:var(--color-text-600)]">{formatDateTime(event.timestamp)}</span>
+                      <span className="text-[color:var(--color-accent-teal)]">{event.kind}</span>
+                      <span className="text-[color:var(--color-text-400)]">{event.actor}</span>
+                      <span className="text-[color:var(--color-text-100)]">{event.action}</span>
+                      {event.detail && <span className="text-[color:var(--color-text-400)]">{event.detail}</span>}
+                    </div>
+                ))}
+              </div>
+            </div>
+        )}
 
         {job.logs.length > 0 && (
             <div className="glow-border rounded-2xl bg-[color:var(--color-panel-900)]/80 p-6">

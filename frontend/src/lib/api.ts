@@ -10,10 +10,14 @@ import type {
   ProjectInput,
   ProjectOption,
   ProjectResponse,
+  PulseOverview,
   SettingsResponse,
+  TraceEvent,
   UserAccount,
   ZohoConnectionTestResponse,
   JiraConnectionTestResponse,
+  ExceptionRecord,
+  KnowledgeDocument,
 } from './types';
 
 const TOKEN_KEY = 'codehealer_token';
@@ -101,6 +105,11 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ username, password }),
       }),
+  register: (username: string, password: string) =>
+      request<{ token: string; username: string; pageAccess: PageKey[] }>('/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({ username, password }),
+      }),
   me: () => request<{ username: string; pageAccess: PageKey[] }>('/auth/me'),
 
   listProjects: () => request<ProjectResponse[]>('/projects'),
@@ -138,6 +147,16 @@ export const api = {
   getJob: (id: string) => request<JobResponse>(`/jobs/${id}`),
   retryJob: (id: string) => request<JobResponse>(`/jobs/${id}/retry`, { method: 'POST' }),
   deleteJob: (id: string) => request<void>(`/jobs/${id}`, { method: 'DELETE' }),
+  pauseJob: (id: string) => request<JobResponse>(`/jobs/${id}/pause`, { method: 'POST' }),
+  resumeJob: (id: string) => request<JobResponse>(`/jobs/${id}/resume`, { method: 'POST' }),
+  cancelJob: (id: string, reason?: string) =>
+      request<JobResponse>(`/jobs/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  approveJob: (id: string) => request<JobResponse>(`/jobs/${id}/approve`, { method: 'POST' }),
+  rejectJob: (id: string, reason?: string) =>
+      request<JobResponse>(`/jobs/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }),
+  answerJob: (id: string, answer: string) =>
+      request<JobResponse>(`/jobs/${id}/answer`, { method: 'POST', body: JSON.stringify({ answer }) }),
+  jobTrace: (id: string) => request<TraceEvent[]>(`/jobs/${id}/trace`),
 
   dashboardStats: (params?: { projectId?: string; from?: string; to?: string; groupBy?: string }) =>
       request<DashboardStats>(`/dashboard/stats${toQueryString(params)}`),
@@ -153,6 +172,12 @@ export const api = {
     azureOpenAiApiKey?: string;
     azureOpenAiApiVersion?: string;
     azureOpenAiDeployment?: string;
+    killSwitchArmed?: boolean;
+    killSwitchReason?: string;
+    requireChangePlanApproval?: boolean;
+    testsMustPass?: boolean;
+    securityScansEnabled?: boolean;
+    failClosedEnabled?: boolean;
   }) => request<SettingsResponse>('/admin/settings', { method: 'PUT', body: JSON.stringify(body) }),
 
   testGptConnection: (body: { endpoint?: string; apiKey?: string; apiVersion?: string; deployment?: string }) =>
@@ -188,4 +213,33 @@ export const api = {
 
   listBoardProjects: () => request<BoardProjectSummary[]>('/board/projects'),
   getBoard: (projectId: string) => request<BoardResponse>(`/board/projects/${projectId}`),
+
+  pulseOverview: () => request<PulseOverview>('/pulse/overview'),
+  pulseExceptions: () => request<ExceptionRecord[]>('/pulse/exceptions'),
+  resolveException: (id: string) =>
+      request<ExceptionRecord>(`/pulse/exceptions/${id}/resolve`, { method: 'POST' }),
+
+  listKnowledge: (projectId: string) =>
+      request<KnowledgeDocument[]>(`/sage${toQueryString({ projectId })}`),
+  ingestKnowledge: (body: {
+    projectId: string;
+    title: string;
+    source?: string;
+    content: string;
+    visibility?: string;
+  }) => request<KnowledgeDocument>('/sage', { method: 'POST', body: JSON.stringify(body) }),
+  updateKnowledge: (
+      id: string,
+      body: { title?: string; source?: string; content?: string; visibility?: string }
+  ) => request<KnowledgeDocument>(`/sage/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteKnowledge: (id: string) => request<void>(`/sage/${id}`, { method: 'DELETE' }),
+
+  recoveryBackup: () => request<Record<string, unknown>>('/admin/recovery/backup'),
+  recoveryRestore: (payload: Record<string, unknown>) =>
+      request<Record<string, unknown>>('/admin/recovery/restore', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+  recoveryDrill: () =>
+      request<Record<string, unknown>>('/admin/recovery/drill', { method: 'POST' }),
 };

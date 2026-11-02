@@ -7,6 +7,7 @@ import com.encipherhealth.codehealer.dto.ServiceConfigRequest;
 import com.encipherhealth.codehealer.dto.ServiceConfigResponse;
 import com.encipherhealth.codehealer.dto.TaskServiceInfo;
 import com.encipherhealth.codehealer.model.AgilePlatform;
+import com.encipherhealth.codehealer.model.MissionType;
 import com.encipherhealth.codehealer.model.Project;
 import com.encipherhealth.codehealer.model.ServiceConfig;
 import com.encipherhealth.codehealer.repository.ProjectRepository;
@@ -74,6 +75,7 @@ public class ProjectController {
                 .zohoOAuthClientSecretEncrypted(encryptionService.encrypt(blankToNull(request.getZohoOAuthClientSecret())))
                 .zohoRefreshTokenEncrypted(encryptionService.encrypt(blankToNull(request.getZohoRefreshToken())))
                 .agilePlatform(parsePlatform(request.getAgilePlatform()))
+                .agentMode(parseAgentMode(request.getAgentMode()))
                 .jiraBaseUrl(blankToNull(request.getJiraBaseUrl()))
                 .jiraProjectKey(blankToNull(request.getJiraProjectKey()))
                 .jiraEmail(blankToNull(request.getJiraEmail()))
@@ -117,6 +119,7 @@ public class ProjectController {
             project.setZohoRefreshTokenEncrypted(encryptionService.encrypt(request.getZohoRefreshToken()));
         }
         project.setAgilePlatform(parsePlatform(request.getAgilePlatform()));
+        project.setAgentMode(parseAgentMode(request.getAgentMode()));
         project.setJiraBaseUrl(blankToNull(request.getJiraBaseUrl()));
         project.setJiraProjectKey(blankToNull(request.getJiraProjectKey()));
         project.setJiraEmail(blankToNull(request.getJiraEmail()));
@@ -229,6 +232,7 @@ public class ProjectController {
                 project.getZohoProjectIdExternal(),
                 project.getZohoRefreshTokenEncrypted() != null,
                 project.resolvedPlatform().name(),
+                project.resolvedAgentMode().name(),
                 project.getJiraBaseUrl(),
                 project.getJiraProjectKey(),
                 project.getJiraEmail(),
@@ -254,6 +258,17 @@ public class ProjectController {
             return AgilePlatform.valueOf(value.strip().toUpperCase());
         } catch (IllegalArgumentException e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "agilePlatform must be ZOHO or JIRA");
+        }
+    }
+
+    private MissionType parseAgentMode(String value) {
+        if (value == null || value.isBlank()) {
+            return MissionType.CODING;
+        }
+        try {
+            return MissionType.valueOf(value.strip().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "agentMode must be CODING or L1_SUPPORT");
         }
     }
 

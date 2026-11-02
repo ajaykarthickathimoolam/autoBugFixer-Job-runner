@@ -9,6 +9,12 @@ public record SettingsResponse(
         boolean hasAzureOpenAiApiKey,
         String azureOpenAiEndpoint,
         String azureOpenAiApiVersion,
-        String azureOpenAiDeployment
+        String azureOpenAiDeployment,
+        boolean killSwitchArmed,
+        String killSwitchReason,
+        boolean requireChangePlanApproval,
+        boolean testsMustPass,
+        boolean securityScansEnabled,
+        boolean failClosedEnabled
 ) {
 }

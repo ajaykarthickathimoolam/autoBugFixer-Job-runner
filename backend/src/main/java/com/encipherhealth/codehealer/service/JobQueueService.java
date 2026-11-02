@@ -90,4 +90,14 @@ public class JobQueueService {
             globalGate.notifyAll();
         }
     }
+
+    public int getActiveJobs() {
+        synchronized (globalGate) {
+            return activeJobs;
+        }
+    }
+
+    public int getMaxConcurrentJobs() {
+        return maxConcurrentJobs;
+    }
 }

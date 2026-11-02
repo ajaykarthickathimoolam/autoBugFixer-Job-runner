@@ -18,8 +18,9 @@ export function BoardGalleryPage() {
   return (
       <div className="flex flex-col gap-6">
         <div>
+          <p className="eyebrow">Live tickets</p>
           <h1 className="page-title">Board</h1>
-          <p className="text-sm text-[color:var(--color-text-400)]">
+          <p className="mt-1 text-sm text-[color:var(--color-text-400)]">
             Browse the live board - pick a project to see every ticket, grouped by bucket.
           </p>
         </div>

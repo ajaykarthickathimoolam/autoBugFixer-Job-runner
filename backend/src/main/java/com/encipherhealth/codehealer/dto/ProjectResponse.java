@@ -14,6 +14,7 @@ public record ProjectResponse(
         String zohoProjectIdExternal,
         boolean hasZohoOAuthCredentials,
         String agilePlatform,
+        String agentMode,
         String jiraBaseUrl,
         String jiraProjectKey,
         String jiraEmail,

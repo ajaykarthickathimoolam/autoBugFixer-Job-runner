@@ -23,8 +23,9 @@ export function UserGuidePage() {
   return (
       <div className="mx-auto flex max-w-3xl flex-col gap-6">
         <div>
+          <p className="eyebrow">Setup</p>
           <h1 className="page-title">User Guide</h1>
-          <p className="text-sm text-[color:var(--color-text-400)]">One-time setup for the fixer (GPT or Claude), Zoho Sprints or Jira Cloud, and Zoho Cliq notifications</p>
+          <p className="mt-1 text-sm text-[color:var(--color-text-400)]">One-time setup for the fixer (GPT or Claude), Zoho Sprints or Jira Cloud, and Zoho Cliq notifications</p>
         </div>
 
         <SectionCard title="1. Fixer (GPT or Claude)">

@@ -74,7 +74,7 @@ export function BoardDetailPage() {
                                 </p>
                                 {item.description && (
                                     <div
-                                        className="prose-invert mt-1 max-w-none text-xs text-[color:var(--color-text-400)] line-clamp-2"
+                                        className="mt-1 max-w-none text-xs text-[color:var(--color-text-400)] line-clamp-2"
                                         dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(item.description) }}
                                     />
                                 )}
